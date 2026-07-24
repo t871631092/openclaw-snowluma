@@ -1,7 +1,7 @@
 {
   "name": "openclaw-snowluma",
   "displayName": "OpenClaw SnowLuma",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenClaw channel plugin for QQ via SnowLuma. Built entirely on @snowluma/sdk — three configurable receive modes (mention/keyword, digest, realtime coalescing), active quote & forward-message resolution, and agent tools for chat history and group members.",
   "type": "module",
   "main": "dist/index.js",

@@ -103,6 +103,18 @@ const HISTORY_HEADER = "【历史聊天记录（仅供参考上下文，请勿�
 const HISTORY_FOOTER = "【以上为历史消息；请针对下面这条最新消息进行回复】";
 
 /**
+ * Stable phrase from OpenClaw's runtime "empty inbound" notice
+ * ("I didn't receive any text in your message. Please resend or add a caption.").
+ * The runtime returns it whenever a turn reaches the agent with no usable text or
+ * media — and it decides that AFTER its own @bot-mention stripping, so an inbound
+ * we composed as non-empty (e.g. a bare `@bot`, a sticker, a reply-with-no-text)
+ * can still come back as this notice. We never want that English string posted to
+ * QQ, so `deliver` drops any reply containing it. Matched as a substring to stay
+ * robust to a response prefix or trailing wording tweaks.
+ */
+const OPENCLAW_EMPTY_INPUT_NOTICE = "I didn't receive any text in your message";
+
+/**
  * Render the peer's accumulated reply-history buffer into a transcript block,
  * trimmed from the oldest end to `history.maxChars`. Empty string when there is
  * no history to show.
@@ -281,6 +293,17 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
     const ctxPayload = runtime.channel.reply.finalizeInboundContext({
       Body: envelopeBody,
+      // `BodyForAgent` is what the runtime feeds the model as the turn's prompt.
+      // We set it explicitly (rather than letting the host derive it) for two
+      // reasons: (1) a digest turn passes empty-string RawBody/CommandBody, and
+      // the host's `BodyForAgent ?? CommandBody ?? RawBody ?? Body` fallback stops
+      // at the empty *string* (`??` only skips null/undefined) — which poisoned
+      // BodyForAgent → BodyStripped → the whole turn to "", so the digest never
+      // summarised and the host returned its canned "empty inbound" notice;
+      // (2) it guarantees the agent sees the full composed body (reply-history +
+      // quote context + transcript), not just the current line. Command routing
+      // still reads the (empty, for digest) CommandBody, so digest stays inert.
+      BodyForAgent: envelopeBody,
       RawBody: composed.rawBody,
       CommandBody: composed.commandBody,
       From: address,
@@ -317,8 +340,18 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
       dispatcherOptions: {
         responsePrefix: messagesConfig.responsePrefix,
         deliver: async (payload, _info) => {
+          const trimmed = (payload.text ?? "").trim();
+
+          // Never relay OpenClaw's canned "empty inbound" notice back to QQ. It
+          // is produced by the runtime (not the agent) for turns it deems empty,
+          // which we can't always detect upstream — drop it here as the reliable
+          // backstop. Nothing else in such a payload is worth sending.
+          if (trimmed.includes(OPENCLAW_EMPTY_INPUT_NOTICE)) {
+            log?.info?.(`[snowluma:${account.accountId}] suppressed OpenClaw empty-input notice — nothing sent`);
+            return;
+          }
+
           if (batch.kind === "digest") {
-            const trimmed = (payload.text ?? "").trim();
             if (trimmed.toUpperCase() === "SKIP") {
               log?.info?.(`[snowluma:${account.accountId}] digest reply was SKIP — nothing sent`);
               return;

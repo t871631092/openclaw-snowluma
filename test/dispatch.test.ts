@@ -643,6 +643,118 @@ describe("dispatchBatch — empty realtime turn", () => {
   });
 });
 
+// ── dispatchBatch — BodyForAgent (empty CommandBody regression) ──────────
+
+describe("dispatchBatch — BodyForAgent", () => {
+  it("gives a digest turn a non-empty BodyForAgent (the prompt+transcript) even though CommandBody is empty", async () => {
+    const { runtime, state } = createMockRuntime();
+    const account = makeAccount();
+    const batch = makeBatch({
+      kind: "digest",
+      trigger: undefined,
+      messages: [
+        makeMsg({ senderId: 1, senderName: "甲", segments: [{ type: "text", data: { text: "早上好" } }] }),
+        makeMsg({ senderId: 2, senderName: "乙", segments: [{ type: "text", data: { text: "开会了" } }] }),
+      ],
+    });
+
+    await dispatchBatch(batch, { account, cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send: makeSend() });
+
+    // The bug: empty-string CommandBody poisoned the host's `?? ` fallback so
+    // BodyForAgent became "", the digest never summarised, and the host returned
+    // its canned empty-input notice. BodyForAgent must carry the real content.
+    const bodyForAgent = state.lastFinalizeArgs.BodyForAgent as string;
+    expect(bodyForAgent.length).toBeGreaterThan(0);
+    expect(bodyForAgent).toContain(account.receive.digest.prompt);
+    expect(bodyForAgent).toContain("甲(1)");
+    // Command routing still sees an empty CommandBody, so a digest stays inert.
+    expect(state.lastFinalizeArgs.CommandBody).toBe("");
+  });
+
+  it("gives a realtime turn a BodyForAgent that includes accumulated history and quote context", async () => {
+    const { runtime, state } = createMockRuntime();
+    const batch = makeBatch({
+      messages: [makeMsg({ segments: [{ type: "text", data: { text: "现在几点" } }] })],
+      history: [makeMsg({ senderId: 3, senderName: "丙", segments: [{ type: "text", data: { text: "刚才在聊什么" } }] })],
+    });
+
+    await dispatchBatch(batch, { account: makeAccount(), cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send: makeSend() });
+
+    const bodyForAgent = state.lastFinalizeArgs.BodyForAgent as string;
+    expect(bodyForAgent).toContain("刚才在聊什么"); // history reaches the agent
+    expect(bodyForAgent).toContain("现在几点"); // current message too
+  });
+});
+
+// ── dispatchBatch — OpenClaw empty-input notice suppression ──────────────
+
+describe("dispatchBatch — empty-input notice suppression", () => {
+  const NOTICE = "I didn't receive any text in your message. Please resend or add a caption.";
+
+  it("does not relay OpenClaw's canned empty-input notice on a realtime turn", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: NOTICE } });
+    const send = makeSend();
+
+    await dispatchBatch(makeBatch(), {
+      account: makeAccount(),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+    });
+
+    expect(send.sendText).not.toHaveBeenCalled();
+    expect(send.sendMedia).not.toHaveBeenCalled();
+  });
+
+  it("suppresses the notice even when a response prefix wraps it", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: `【提示】${NOTICE}` } });
+    const send = makeSend();
+
+    await dispatchBatch(makeBatch(), {
+      account: makeAccount(),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+    });
+
+    expect(send.sendText).not.toHaveBeenCalled();
+  });
+
+  it("also suppresses it on a digest turn", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: NOTICE } });
+    const send = makeSend();
+    const batch = makeBatch({ kind: "digest", trigger: undefined });
+
+    await dispatchBatch(batch, {
+      account: makeAccount(),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+    });
+
+    expect(send.sendText).not.toHaveBeenCalled();
+  });
+
+  it("still relays an ordinary reply that does not contain the notice", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "好的，已处理。" } });
+    const send = makeSend();
+
+    await dispatchBatch(makeBatch(), {
+      account: makeAccount(),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+    });
+
+    expect(send.sendText).toHaveBeenCalledTimes(1);
+    expect(send.sendText.mock.calls[0]![0]).toMatchObject({ text: "好的，已处理。" });
+  });
+});
+
 // ── dispatchBatch — debug mode ───────────────────────────────────────────
 
 describe("dispatchBatch — debug mode", () => {
