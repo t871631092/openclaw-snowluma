@@ -1,0 +1,66 @@
+{
+  "name": "openclaw-snowluma",
+  "displayName": "OpenClaw SnowLuma",
+  "version": "0.1.4",
+  "description": "OpenClaw channel plugin for QQ via SnowLuma. Built entirely on @snowluma/sdk — three configurable receive modes (mention/keyword, digest, realtime coalescing), active quote & forward-message resolution, and agent tools for chat history and group members.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "scripts",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "license": "MIT",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "setupEntry": "./dist/setup-entry.js",
+    "channel": {
+      "id": "snowluma",
+      "label": "SnowLuma",
+      "blurb": "QQ messaging via SnowLuma"
+    },
+    "compat": {
+      "pluginApi": ">=2026.3.23-1"
+    }
+  },
+  "scripts": {
+    "postinstall": "node ./scripts/patch-snowluma-sdk.mjs",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "prepack": "npm run build",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "dependencies": {
+    "@snowluma/sdk": "^1.12.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@vitest/coverage-v8": "^2.1.9",
+    "openclaw": "^2026.5.7",
+    "typebox": "^1.1.37",
+    "typescript": "^5.7.0",
+    "vitepress": "^1.6.4",
+    "vitest": "^2.1.9"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.23-1 <2027"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  }
+}

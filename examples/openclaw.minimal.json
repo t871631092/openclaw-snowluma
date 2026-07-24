@@ -1,0 +1,17 @@
+{
+  "plugins": {
+    "allow": ["openclaw-snowluma"],
+    "entries": {
+      "openclaw-snowluma": {
+        "enabled": true
+      }
+    }
+  },
+  "channels": {
+    "snowluma": {
+      "enabled": true,
+      "wsUrl": "ws://127.0.0.1:3001/",
+      "accessToken": "your-snowluma-token"
+    }
+  }
+}

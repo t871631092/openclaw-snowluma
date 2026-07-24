@@ -1,0 +1,110 @@
+{
+  "plugins": {
+    "allow": ["openclaw-snowluma"],
+    "entries": {
+      "openclaw-snowluma": {
+        "enabled": true
+      }
+    }
+  },
+  "channels": {
+    "snowluma": {
+      "enabled": true,
+      "name": "主账号",
+      "wsUrl": "ws://127.0.0.1:3001/",
+      "httpUrl": "http://127.0.0.1:3001",
+      "accessToken": "primary-account-token",
+      "selfId": 123456789,
+      "allowFrom": ["group:20000002", "private:10000001"],
+      "denyFrom": ["private:99999999"],
+      "groupAutoReact": true,
+      "groupAutoReactEmojiId": 76,
+      "replyToTrigger": false,
+      "textChunkLimit": 2000,
+      "requestTimeoutMs": 15000,
+      "reconnect": {
+        "enabled": true,
+        "retries": 0,
+        "minDelayMs": 2000,
+        "maxDelayMs": 60000
+      },
+      "receive": {
+        "mention": {
+          "enabled": true,
+          "requireMentionInGroup": false,
+          "keywords": ["机器人", "小助手"],
+          "keywordMatch": "prefix",
+          "caseSensitive": true,
+          "triggerOnReplyToSelf": false,
+          "alwaysReplyInDirect": false
+        },
+        "digest": {
+          "enabled": true,
+          "intervalMs": 120000,
+          "maxMessages": 30,
+          "minMessages": 5,
+          "prompt": "请用简洁的中文归纳这段时间群里聊了什么、达成了什么结论、还有什么待办；没有值得汇报的内容只回复 SKIP。",
+          "scope": "all",
+          "peers": ["group:20000002", "private:10000001"],
+          "maxTranscriptChars": 8000
+        },
+        "realtime": {
+          "enabled": true,
+          "windowMs": 500,
+          "maxWindowMs": 2000,
+          "maxMessages": 6,
+          "maxChars": 4000
+        }
+      },
+      "quote": {
+        "enabled": true,
+        "resolveForward": false,
+        "maxDepth": 1,
+        "maxNodes": 10,
+        "maxChars": 1500,
+        "timeoutMs": 5000
+      },
+      "tools": {
+        "enabled": true
+      },
+      "accounts": {
+        "secondary": {
+          "enabled": true,
+          "name": "备用小号",
+          "wsUrl": "ws://127.0.0.1:3002/",
+          "accessToken": "secondary-account-token",
+          "selfId": 987654321,
+          "allowFrom": ["*"],
+          "groupAutoReact": false,
+          "replyToTrigger": true,
+          "reconnect": {
+            "enabled": true,
+            "retries": 5,
+            "minDelayMs": 1000,
+            "maxDelayMs": 30000
+          },
+          "receive": {
+            "mention": {
+              "enabled": true,
+              "requireMentionInGroup": true,
+              "alwaysReplyInDirect": true
+            },
+            "digest": {
+              "enabled": false
+            },
+            "realtime": {
+              "enabled": true
+            }
+          },
+          "quote": {
+            "enabled": true,
+            "resolveForward": true
+          },
+          "tools": {
+            "enabled": false
+          }
+        }
+      }
+    }
+  }
+}

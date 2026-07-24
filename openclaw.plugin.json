@@ -1,0 +1,434 @@
+{
+  "id": "openclaw-snowluma",
+  "name": "SnowLuma",
+  "description": "OpenClaw channel plugin connecting QQ via the SnowLuma SDK. Speaks to SnowLuma exclusively through @snowluma/sdk (WebSocket + action client); never reimplements the OneBot protocol on the wire.",
+  "version": "0.1.0",
+  "channels": ["snowluma"],
+  "channelEnvVars": {
+    "snowluma": [
+      "SNOWLUMA_WS_URL",
+      "SNOWLUMA_HTTP_URL",
+      "SNOWLUMA_ACCESS_TOKEN",
+      "SNOWLUMA_TOKEN",
+      "SNOWLUMA_SELF_ID"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "channelConfigs": {
+    "snowluma": {
+      "label": "SnowLuma",
+      "description": "QQ messaging via the SnowLuma SDK — mention/keyword, digest, and realtime receive modes, plus active quote/forward-message resolution.",
+      "schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable this SnowLuma account. Default: true."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name for this account."
+          },
+          "wsUrl": {
+            "type": "string",
+            "description": "SnowLuma OneBot WebSocket URL, e.g. ws://127.0.0.1:3001/."
+          },
+          "httpUrl": {
+            "type": "string",
+            "description": "Optional HTTP API URL. When set, actions go over HTTP instead of the socket."
+          },
+          "accessToken": {
+            "type": "string",
+            "description": "SnowLuma access token."
+          },
+          "selfId": {
+            "type": ["integer", "string"],
+            "description": "Bot's own QQ number. Auto-detected via get_login_info when omitted."
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Allowed peers, e.g. [\"private:123\", \"group:456\", \"*\"]. Unset allows everyone."
+          },
+          "denyFrom": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Denied peers; evaluated after allowFrom and always wins."
+          },
+          "groupAutoReact": {
+            "type": "boolean",
+            "default": false,
+            "description": "React to inbound group messages that trigger the agent. Default: false."
+          },
+          "groupAutoReactEmojiId": {
+            "type": ["integer", "string"],
+            "default": 1,
+            "description": "QQ emoji id used for groupAutoReact. Default: 1."
+          },
+          "replyToTrigger": {
+            "type": "boolean",
+            "default": true,
+            "description": "Send replies as QQ quote-replies to the triggering message. Default: true."
+          },
+          "textChunkLimit": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "default": 4500,
+            "description": "Split outbound text into chunks of at most this many characters. Default: 4500."
+          },
+          "requestTimeoutMs": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "default": 30000,
+            "description": "Request timeout for SnowLuma actions, in ms. Default: 30000."
+          },
+          "reconnect": {
+            "$ref": "#/$defs/reconnect",
+            "description": "Reconnect tuning handed to the SDK's WebSocket client."
+          },
+          "receive": {
+            "$ref": "#/$defs/receive",
+            "description": "The three receive modes: mention/keyword, digest, and realtime coalescing."
+          },
+          "quote": {
+            "$ref": "#/$defs/quote",
+            "description": "Active quote / merged-forward resolution via get_msg and get_forward_msg."
+          },
+          "tools": {
+            "$ref": "#/$defs/tools",
+            "description": "Agent tool registration for this account."
+          },
+          "accounts": {
+            "type": "object",
+            "description": "Additional named SnowLuma accounts, keyed by account id.",
+            "additionalProperties": { "$ref": "#/$defs/account" }
+          }
+        },
+        "$defs": {
+          "mention": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Reply the moment a message is addressed at the bot: an explicit @bot mention or a configured keyword hit.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable the mention/keyword trigger. Default: true."
+              },
+              "requireMentionInGroup": {
+                "type": "boolean",
+                "default": true,
+                "description": "Require an @bot mention in group chats. Default: true."
+              },
+              "keywords": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Keywords that trigger a reply without an @bot mention. Default: []."
+              },
+              "keywordMatch": {
+                "type": "string",
+                "enum": ["contains", "prefix", "exact", "regex"],
+                "default": "contains",
+                "description": "How keywords are matched against the message text. Default: contains."
+              },
+              "caseSensitive": {
+                "type": "boolean",
+                "default": false,
+                "description": "Case-sensitive keyword matching. Default: false."
+              },
+              "triggerOnReplyToSelf": {
+                "type": "boolean",
+                "default": true,
+                "description": "Treat a reply to one of the bot's own messages as a trigger. Default: true."
+              },
+              "alwaysReplyInDirect": {
+                "type": "boolean",
+                "default": true,
+                "description": "Always reply in direct (private) chats, mention or not. Default: true."
+              }
+            }
+          },
+          "digest": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Periodically summarise what a chat has been talking about. Fires when intervalMs elapses or maxMessages accumulate, whichever comes first; suppressed below minMessages.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Enable digest mode. Default: false."
+              },
+              "intervalMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 300000,
+                "description": "Flush the window after this many milliseconds. Default: 300000 (5 min)."
+              },
+              "maxMessages": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 50,
+                "description": "Flush the window once this many messages have accumulated. Default: 50."
+              },
+              "minMessages": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 3,
+                "description": "Never flush a window holding fewer messages than this (internally capped to maxMessages). Default: 3."
+              },
+              "prompt": {
+                "type": "string",
+                "description": "Instruction prepended to the transcript when dispatching. Default: the plugin's built-in Chinese digest prompt asking for a concise summary, or SKIP if nothing is worth reporting."
+              },
+              "scope": {
+                "type": "string",
+                "enum": ["group", "direct", "all"],
+                "default": "group",
+                "description": "Which chats to observe. Default: group."
+              },
+              "peers": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Only observe these peers (e.g. group:123). Empty/omitted means all peers in scope."
+              },
+              "maxTranscriptChars": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 20000,
+                "description": "Hard cap on transcript characters handed to the agent. Default: 20000."
+              }
+            }
+          },
+          "realtime": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Coalesce a burst of messages that arrive within a sub-second window into one agent turn, then answer immediately.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable realtime coalescing. Default: true."
+              },
+              "windowMs": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 800,
+                "description": "Quiet period before flushing, in ms; timer resets on each new message. Must stay under 1000ms to remain 'realtime'. Default: 800."
+              },
+              "maxWindowMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 3000,
+                "description": "Absolute ceiling on how long a burst may be held open, in ms. Default: 3000."
+              },
+              "maxMessages": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 10,
+                "description": "Flush immediately once this many messages are buffered. Default: 10."
+              },
+              "maxChars": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 8000,
+                "description": "Flush immediately once the buffered text exceeds this many characters. Default: 8000."
+              }
+            }
+          },
+          "receive": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "mention": { "$ref": "#/$defs/mention" },
+              "digest": { "$ref": "#/$defs/digest" },
+              "realtime": { "$ref": "#/$defs/realtime" }
+            }
+          },
+          "quote": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "The plugin actively calls get_msg / get_forward_msg on receipt so the agent sees quoted and merged-forward content.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Actively fetch quoted messages via get_msg. Default: true."
+              },
+              "resolveForward": {
+                "type": "boolean",
+                "default": true,
+                "description": "Expand merged-forward payloads via get_forward_msg. Default: true."
+              },
+              "maxDepth": {
+                "type": "integer",
+                "minimum": 0,
+                "default": 2,
+                "description": "How deep to follow nested forwards. Default: 2."
+              },
+              "maxNodes": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 20,
+                "description": "Cap on forwarded nodes rendered per forward. Default: 20."
+              },
+              "maxChars": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 4000,
+                "description": "Cap on characters of resolved quote text injected into the body. Default: 4000."
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 10000,
+                "description": "Per-fetch timeout in milliseconds. Default: 10000."
+              }
+            }
+          },
+          "reconnect": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable the SDK's built-in WebSocket reconnect. Default: true."
+              },
+              "retries": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Max reconnect attempts. Omit for unlimited retries; an explicit number — including 0, meaning never retry — is honoured as written."
+              },
+              "minDelayMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 1000,
+                "description": "Minimum delay between reconnect attempts, in ms. Default: 1000."
+              },
+              "maxDelayMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 30000,
+                "description": "Maximum delay between reconnect attempts, in ms. Default: 30000."
+              }
+            }
+          },
+          "tools": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Register the plugin's agent tools (snowluma_get_history, snowluma_get_group_members). Default: true."
+              }
+            }
+          },
+          "account": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "One additional named SnowLuma account under channels.snowluma.accounts.<id>.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Enable this SnowLuma account. Default: true."
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name for this account."
+              },
+              "wsUrl": {
+                "type": "string",
+                "description": "SnowLuma OneBot WebSocket URL, e.g. ws://127.0.0.1:3001/."
+              },
+              "httpUrl": {
+                "type": "string",
+                "description": "Optional HTTP API URL. When set, actions go over HTTP instead of the socket."
+              },
+              "accessToken": {
+                "type": "string",
+                "description": "SnowLuma access token."
+              },
+              "selfId": {
+                "type": ["integer", "string"],
+                "description": "Bot's own QQ number. Auto-detected via get_login_info when omitted."
+              },
+              "allowFrom": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Allowed peers, e.g. [\"private:123\", \"group:456\", \"*\"]. Unset allows everyone."
+              },
+              "denyFrom": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Denied peers; evaluated after allowFrom and always wins."
+              },
+              "groupAutoReact": {
+                "type": "boolean",
+                "default": false,
+                "description": "React to inbound group messages that trigger the agent. Default: false."
+              },
+              "groupAutoReactEmojiId": {
+                "type": ["integer", "string"],
+                "default": 1,
+                "description": "QQ emoji id used for groupAutoReact. Default: 1."
+              },
+              "replyToTrigger": {
+                "type": "boolean",
+                "default": true,
+                "description": "Send replies as QQ quote-replies to the triggering message. Default: true."
+              },
+              "textChunkLimit": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 4500,
+                "description": "Split outbound text into chunks of at most this many characters. Default: 4500."
+              },
+              "requestTimeoutMs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "default": 30000,
+                "description": "Request timeout for SnowLuma actions, in ms. Default: 30000."
+              },
+              "reconnect": { "$ref": "#/$defs/reconnect" },
+              "receive": { "$ref": "#/$defs/receive" },
+              "quote": { "$ref": "#/$defs/quote" },
+              "tools": { "$ref": "#/$defs/tools" }
+            }
+          }
+        }
+      },
+      "uiHints": {
+        "wsUrl": {
+          "label": "WebSocket URL",
+          "placeholder": "ws://127.0.0.1:3001/"
+        },
+        "httpUrl": {
+          "label": "HTTP API URL",
+          "placeholder": "http://127.0.0.1:3001"
+        },
+        "accessToken": {
+          "label": "Access token",
+          "sensitive": true
+        },
+        "selfId": {
+          "label": "Bot QQ number",
+          "help": "Leave empty to auto-detect via get_login_info."
+        }
+      }
+    }
+  },
+  "contracts": {
+    "tools": ["snowluma_get_history", "snowluma_get_group_members"]
+  }
+}
