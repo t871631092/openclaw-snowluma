@@ -2,10 +2,8 @@
   "id": "openclaw-snowluma",
   "name": "SnowLuma",
   "description": "OpenClaw channel plugin connecting QQ via the SnowLuma SDK. Speaks to SnowLuma exclusively through @snowluma/sdk (WebSocket + action client); never reimplements the OneBot protocol on the wire.",
-  "version": "0.1.6",
-  "channels": [
-    "snowluma"
-  ],
+  "version": "0.1.7",
+  "channels": ["snowluma"],
   "channelEnvVars": {
     "snowluma": [
       "SNOWLUMA_WS_URL",
@@ -50,10 +48,7 @@
             "description": "SnowLuma access token."
           },
           "selfId": {
-            "type": [
-              "integer",
-              "string"
-            ],
+            "type": ["integer", "string"],
             "description": "Bot's own QQ number. Auto-detected via get_login_info when omitted."
           },
           "allowFrom": {
@@ -76,10 +71,7 @@
             "description": "React to inbound group messages that trigger the agent. Default: false."
           },
           "groupAutoReactEmojiId": {
-            "type": [
-              "integer",
-              "string"
-            ],
+            "type": ["integer", "string"],
             "default": 1,
             "description": "QQ emoji id used for groupAutoReact. Default: 1."
           },
@@ -163,12 +155,7 @@
                   },
                   "keywordMatch": {
                     "type": "string",
-                    "enum": [
-                      "contains",
-                      "prefix",
-                      "exact",
-                      "regex"
-                    ],
+                    "enum": ["contains", "prefix", "exact", "regex"],
                     "default": "contains",
                     "description": "How keywords are matched against the message text. Default: contains."
                   },
@@ -223,11 +210,7 @@
                   },
                   "scope": {
                     "type": "string",
-                    "enum": [
-                      "group",
-                      "direct",
-                      "all"
-                    ],
+                    "enum": ["group", "direct", "all"],
                     "default": "group",
                     "description": "Which chats to observe. Default: group."
                   },
@@ -399,10 +382,7 @@
                   "description": "SnowLuma access token."
                 },
                 "selfId": {
-                  "type": [
-                    "integer",
-                    "string"
-                  ],
+                  "type": ["integer", "string"],
                   "description": "Bot's own QQ number. Auto-detected via get_login_info when omitted."
                 },
                 "allowFrom": {
@@ -425,10 +405,7 @@
                   "description": "React to inbound group messages that trigger the agent. Default: false."
                 },
                 "groupAutoReactEmojiId": {
-                  "type": [
-                    "integer",
-                    "string"
-                  ],
+                  "type": ["integer", "string"],
                   "default": 1,
                   "description": "QQ emoji id used for groupAutoReact. Default: 1."
                 },
@@ -511,12 +488,7 @@
                         },
                         "keywordMatch": {
                           "type": "string",
-                          "enum": [
-                            "contains",
-                            "prefix",
-                            "exact",
-                            "regex"
-                          ],
+                          "enum": ["contains", "prefix", "exact", "regex"],
                           "default": "contains",
                           "description": "How keywords are matched against the message text. Default: contains."
                         },
@@ -571,11 +543,7 @@
                         },
                         "scope": {
                           "type": "string",
-                          "enum": [
-                            "group",
-                            "direct",
-                            "all"
-                          ],
+                          "enum": ["group", "direct", "all"],
                           "default": "group",
                           "description": "Which chats to observe. Default: group."
                         },
@@ -741,9 +709,6 @@
     }
   },
   "contracts": {
-    "tools": [
-      "snowluma_get_history",
-      "snowluma_get_group_members"
-    ]
+    "tools": ["snowluma_get_history", "snowluma_get_group_members"]
   }
 }
