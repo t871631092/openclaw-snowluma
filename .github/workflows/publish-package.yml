@@ -1,0 +1,57 @@
+name: Publish Package
+
+# 发布到公共 npm registry。需要在仓库 Settings -> Secrets and variables -> Actions
+# 里配置一个 NPM_TOKEN（npmjs.com 上生成的 Automation 类型 access token,
+# 对 openclaw-snowluma 这个包名有发布权限）。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - run: npm run build
+
+      - name: Check if this version is already published
+        id: check
+        run: |
+          version=$(node -p "require('./package.json').version")
+          name=$(node -p "require('./package.json').name")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.check.outputs.exists == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish
+
+      - name: Skip (version unchanged)
+        if: steps.check.outputs.exists == 'true'
+        run: echo "v${{ steps.check.outputs.version }} already published to npm, skipping."

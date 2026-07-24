@@ -46,6 +46,7 @@ runtime, delivers the reply) → `outbound.ts` (send back to QQ).
 | `plugin-entry.ts` | Local, `openclaw`-free port of `defineChannelPluginEntry` (+ `emptyChannelConfigSchema`) used by `index.ts`, so `index.js`'s graph imports no `openclaw/*` at runtime — see hard constraints. |
 | `runtime.ts` | Module-level `PluginRuntime` store (`setSnowLumaRuntime`/`getSnowLumaRuntime`/...) that `dispatch.ts` reads from; hand-rolled to stay `openclaw`-free. |
 | `channel.ts` | The `ChannelPlugin` surface itself — wires config/setup/outbound/actions/agentTools/gateway/status together for the OpenClaw host. |
+| `config-schema.ts` | `channels.snowluma` control-UI `configSchema` (`snowLumaPlugin.configSchema`) — plain JSON Schema literals mirroring `SnowLumaAccountConfig`/`SnowLumaChannelConfig`, using only node shapes the host's config-editor renderer supports (`type`/`properties`/`items`/`enum`/`additionalProperties`/scalar `anyOf`). `ChannelConfigSchema`/`ChannelConfigUiHint` are type-only — see hard constraints. |
 
 `index.ts` and `setup-entry.ts` at the project root are the plugin's two OpenClaw entry points
 (`openclaw.extensions` and `openclaw.setupEntry` in `package.json`).

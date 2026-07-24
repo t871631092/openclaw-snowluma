@@ -1,6 +1,10 @@
 import { defineConfig } from "vitepress";
 
 export default defineConfig({
+  // GitHub Actions 部署到项目页 https://t871631092.github.io/openclaw-snowluma/，
+  // 需要非根 base；本地 dev/preview 时仍用根路径。
+  base: process.env.GITHUB_ACTIONS ? "/openclaw-snowluma/" : "/",
+
   lang: "zh-CN",
   title: "openclaw-snowluma",
   description: "OpenClaw 的 SnowLuma QQ 通道插件文档 —— 基于 @snowluma/sdk 构建，纯 SDK 驱动，不重新实现 OneBot 协议。",

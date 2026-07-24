@@ -16,6 +16,7 @@ import {
   listSnowLumaAccountIds,
   resolveSnowLumaAccount,
 } from "./config.js";
+import { snowLumaConfigSchema } from "./config-schema.js";
 import { startGateway } from "./gateway.js";
 import { parseTarget, reactToMessage, sendMedia as outboundSendMedia, sendText as outboundSendText } from "./outbound.js";
 import { createSnowLumaAgentTools } from "./tools.js";
@@ -53,6 +54,7 @@ export const snowLumaPlugin: ChannelPlugin<ResolvedSnowLumaAccount> = {
     blockStreaming: true,
   },
   reload: { configPrefixes: ["channels.snowluma"] },
+  configSchema: snowLumaConfigSchema,
   messaging: {
     normalizeTarget: (target) => target.replace(/^snowluma:/i, ""),
     targetResolver: {
