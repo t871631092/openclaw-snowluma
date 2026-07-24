@@ -61,10 +61,12 @@ function makeAccount(overrides: {
   selfId?: number;
   digest?: Partial<ResolvedReceiveConfig["digest"]>;
   realtime?: Partial<ResolvedReceiveConfig["realtime"]>;
+  history?: Partial<ResolvedReceiveConfig["history"]>;
 } = {}): ResolvedSnowLumaAccount {
   const receive = cloneReceive();
   Object.assign(receive.digest, overrides.digest);
   Object.assign(receive.realtime, overrides.realtime);
+  Object.assign(receive.history, overrides.history);
 
   return {
     accountId: "default",
@@ -76,6 +78,7 @@ function makeAccount(overrides: {
     replyToTrigger: true,
     textChunkLimit: 4500,
     requestTimeoutMs: 30_000,
+    debug: false,
     reconnect: { enabled: true, retries: Number.POSITIVE_INFINITY, minDelayMs: 1000, maxDelayMs: 30_000 },
     receive,
     quote: JSON.parse(JSON.stringify(QUOTE_DEFAULTS)),
@@ -447,6 +450,205 @@ describe("aggregator: digest engine", () => {
     expect(onFlush).toHaveBeenCalledTimes(1);
     const batch = onFlush.mock.calls[0][0];
     expect(batch.messages.map((m: NormalizedMessage) => m.text)).toEqual(["BBBBBBBBBB", "CCCCCCCCCC"]);
+  });
+});
+
+// ── reply-history engine ─────────────────────────────────────────────────
+
+describe("aggregator: reply-history engine", () => {
+  it("attaches prior messages as batch.history (excluding the batch itself) and drains the buffer on flush", () => {
+    const clock = createFakeClock();
+    const onFlush = vi.fn<(batch: AggregatedBatch) => void>();
+    const agg = createAggregator({
+      account: makeAccount(),
+      onFlush,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+
+    const ctx1 = makeMessage({ text: "闲聊一" });
+    const ctx2 = makeMessage({ text: "闲聊二" });
+    agg.accept(ctx1, NOT_TRIGGERED); // pure context, opens no window
+    agg.accept(ctx2, NOT_TRIGGERED);
+    expect(agg.pendingRealtimeKeys()).toEqual([]);
+    expect(agg.pendingHistoryKeys()).toEqual(["group:2001"]);
+
+    const trigger = makeMessage({ text: "在吗" });
+    agg.accept(trigger, TRIGGERED);
+    clock.advance(800); // quiet flush
+
+    expect(onFlush).toHaveBeenCalledTimes(1);
+    const batch = onFlush.mock.calls[0][0];
+    expect(batch.messages).toEqual([trigger]);
+    expect(batch.history).toEqual([ctx1, ctx2]);
+    // Drained on consume so it is not re-sent next time.
+    expect(agg.pendingHistoryKeys()).toEqual([]);
+  });
+
+  it("excludes coalesced burst messages from the history it hands to the reply", () => {
+    const clock = createFakeClock();
+    const onFlush = vi.fn<(batch: AggregatedBatch) => void>();
+    const agg = createAggregator({
+      account: makeAccount(),
+      onFlush,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+
+    const older = makeMessage({ text: "更早的上下文" });
+    agg.accept(older, NOT_TRIGGERED);
+    const a = makeMessage({ text: "触发" });
+    agg.accept(a, TRIGGERED);
+    const b = makeMessage({ text: "跟进" });
+    agg.accept(b, NOT_TRIGGERED); // joins the open window (same sender)
+
+    clock.advance(800);
+
+    const batch = onFlush.mock.calls[0][0];
+    expect(batch.messages).toEqual([a, b]);
+    expect(batch.history).toEqual([older]);
+  });
+
+  it("does not repeat already-consumed history on a later reply", () => {
+    const clock = createFakeClock();
+    const onFlush = vi.fn<(batch: AggregatedBatch) => void>();
+    const agg = createAggregator({
+      account: makeAccount(),
+      onFlush,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+
+    agg.accept(makeMessage({ text: "旧一" }), NOT_TRIGGERED);
+    agg.accept(makeMessage({ text: "旧二" }), NOT_TRIGGERED);
+    agg.accept(makeMessage({ text: "第一次触发" }), TRIGGERED);
+    clock.advance(800);
+
+    const fresh = makeMessage({ text: "新上下文" });
+    agg.accept(fresh, NOT_TRIGGERED);
+    const trigger2 = makeMessage({ text: "第二次触发" });
+    agg.accept(trigger2, TRIGGERED);
+    clock.advance(800);
+
+    expect(onFlush).toHaveBeenCalledTimes(2);
+    const secondBatch = onFlush.mock.calls[1][0];
+    expect(secondBatch.messages).toEqual([trigger2]);
+    expect(secondBatch.history).toEqual([fresh]); // only what arrived since the first reply
+  });
+
+  it("trims the history buffer to history.maxMessages (newest kept)", () => {
+    const clock = createFakeClock();
+    const onFlush = vi.fn<(batch: AggregatedBatch) => void>();
+    const agg = createAggregator({
+      account: makeAccount({ history: { maxMessages: 2 } }),
+      onFlush,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+
+    agg.accept(makeMessage({ text: "c1" }), NOT_TRIGGERED);
+    agg.accept(makeMessage({ text: "c2" }), NOT_TRIGGERED);
+    const c3 = makeMessage({ text: "c3" });
+    agg.accept(c3, NOT_TRIGGERED); // evicts c1, buffer=[c2,c3]
+
+    const trigger = makeMessage({ text: "go" });
+    agg.accept(trigger, TRIGGERED); // evicts c2, buffer=[c3,trigger]
+    clock.advance(800);
+
+    const batch = onFlush.mock.calls[0][0];
+    expect(batch.history?.map((m: NormalizedMessage) => m.text)).toEqual(["c3"]);
+  });
+
+  it("drops history older than history.maxAgeMs (by QQ timestamp) at snapshot time", () => {
+    const clock = createFakeClock();
+    const onFlush = vi.fn<(batch: AggregatedBatch) => void>();
+    const agg = createAggregator({
+      account: makeAccount({ history: { maxAgeMs: 5000 } }),
+      onFlush,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+
+    agg.accept(makeMessage({ text: "old", time: 10 }), NOT_TRIGGERED); // 10s
+    agg.accept(makeMessage({ text: "recent", time: 18 }), NOT_TRIGGERED); // 18s
+
+    clock.advance(20_000); // now() = 20_000ms = 20s
+    agg.accept(makeMessage({ text: "go", time: 20 }), TRIGGERED);
+    clock.advance(800); // quiet flush at 20_800ms ⇒ cutoff = (20_800 - 5_000)/1000 = 15.8s
+
+    const batch = onFlush.mock.calls[0][0];
+    // old(10s) < 15.8s cutoff ⇒ dropped; recent(18s) kept.
+    expect(batch.history?.map((m: NormalizedMessage) => m.text)).toEqual(["recent"]);
+  });
+
+  it("keeps no history and attaches none when history.enabled is false", () => {
+    const clock = createFakeClock();
+    const onFlush = vi.fn<(batch: AggregatedBatch) => void>();
+    const agg = createAggregator({
+      account: makeAccount({ history: { enabled: false } }),
+      onFlush,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+
+    agg.accept(makeMessage({ text: "context" }), NOT_TRIGGERED);
+    expect(agg.pendingHistoryKeys()).toEqual([]);
+
+    agg.accept(makeMessage({ text: "trigger" }), TRIGGERED);
+    clock.advance(800);
+
+    const batch = onFlush.mock.calls[0][0];
+    expect(batch.history ?? []).toEqual([]);
+  });
+
+  it("keeps the digest queue independent of the drained history buffer", () => {
+    const clock = createFakeClock();
+    const onFlush = vi.fn<(batch: AggregatedBatch) => void>();
+    const agg = createAggregator({
+      account: makeAccount({ digest: { enabled: true, maxMessages: 100, minMessages: 1, intervalMs: 100_000 } }),
+      onFlush,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+
+    agg.accept(makeMessage({ text: "闲聊" }), NOT_TRIGGERED);
+    agg.accept(makeMessage({ text: "触发" }), TRIGGERED);
+    clock.advance(800); // realtime flush drains history
+
+    // The realtime reply drained the history buffer, but the digest window for
+    // the same peer is untouched — the two queues are stored separately.
+    expect(agg.pendingHistoryKeys()).toEqual([]);
+    expect(agg.pendingDigestKeys()).toEqual(["group:2001"]);
+  });
+
+  it("also attaches history on the immediate path when realtime coalescing is disabled", () => {
+    const clock = createFakeClock();
+    const onFlush = vi.fn<(batch: AggregatedBatch) => void>();
+    const agg = createAggregator({
+      account: makeAccount({ realtime: { enabled: false } }),
+      onFlush,
+      now: clock.now,
+      setTimeoutFn: clock.setTimeoutFn,
+      clearTimeoutFn: clock.clearTimeoutFn,
+    });
+
+    const ctx = makeMessage({ text: "先说一句" });
+    agg.accept(ctx, NOT_TRIGGERED); // buffered as history, no window opened
+    const trigger = makeMessage({ text: "然后叫机器人" });
+    agg.accept(trigger, TRIGGERED); // immediate flush
+
+    expect(onFlush).toHaveBeenCalledTimes(1);
+    const batch = onFlush.mock.calls[0][0];
+    expect(batch.reason).toBe("immediate");
+    expect(batch.messages).toEqual([trigger]);
+    expect(batch.history).toEqual([ctx]);
   });
 });
 

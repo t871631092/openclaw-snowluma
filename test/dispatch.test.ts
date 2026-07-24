@@ -182,6 +182,40 @@ describe("buildBatchBody", () => {
     expect(composed.commandBody).toBe("回复");
   });
 
+  it("prepends accumulated reply-history to body only, not rawBody/commandBody", () => {
+    const account = makeAccount();
+    const batch = makeBatch({
+      messages: [makeMsg({ segments: [{ type: "text", data: { text: "在吗" } }] })],
+      history: [
+        makeMsg({ senderId: 1, senderName: "甲", time: 1_700_000_000, segments: [{ type: "text", data: { text: "上一句话" } }] }),
+        makeMsg({ senderId: 2, senderName: "乙", time: 1_700_000_030, segments: [{ type: "text", data: { text: "另一句" } }] }),
+      ],
+    });
+
+    const composed = buildBatchBody(batch, account, "");
+    expect(composed.body).toContain("甲(1)");
+    expect(composed.body).toContain("上一句话");
+    expect(composed.body).toContain("另一句");
+    // The current message stays at the end, after the history block.
+    expect(composed.body.trimEnd().endsWith("在吗")).toBe(true);
+    // History is context only — the command parser still sees just the input.
+    expect(composed.rawBody).toBe("在吗");
+    expect(composed.commandBody).toBe("在吗");
+  });
+
+  it("ignores a history field on a digest batch", () => {
+    const account = makeAccount();
+    const batch = makeBatch({
+      kind: "digest",
+      trigger: undefined,
+      history: [makeMsg({ segments: [{ type: "text", data: { text: "不应出现在摘要里" } }] })],
+      messages: [makeMsg({ senderId: 2, senderName: "乙", segments: [{ type: "text", data: { text: "记录" } }] })],
+    });
+
+    const composed = buildBatchBody(batch, account, "");
+    expect(composed.body).not.toContain("不应出现在摘要里");
+  });
+
   it("collects imageUrls across every realtime message", () => {
     const account = makeAccount();
     const batch = makeBatch({
@@ -541,6 +575,113 @@ describe("dispatchBatch — delivery", () => {
     await expect(
       dispatchBatch(makeBatch(), { account: makeAccount(), cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send }),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ── dispatchBatch — empty realtime turn ──────────────────────────────────
+
+describe("dispatchBatch — empty realtime turn", () => {
+  it("skips dispatch (sends nothing, never calls the agent) when the body is empty and there is no media", async () => {
+    const { runtime, state } = createMockRuntime();
+    const send = makeSend();
+    // A message that renders to nothing (e.g. a reply-only / empty message).
+    const batch = makeBatch({
+      messages: [makeMsg({ segments: [], text: "" })],
+    });
+
+    await dispatchBatch(batch, {
+      account: makeAccount({ selfId: 999 }),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+    });
+
+    expect(send.sendText).not.toHaveBeenCalled();
+    expect(send.sendMedia).not.toHaveBeenCalled();
+    // The agent runtime is never invoked, so no canned empty-input reply is produced.
+    expect(state.lastDispatchArgs).toBeNull();
+  });
+
+  it("still dispatches an empty-text turn when it carries an image", async () => {
+    const { runtime, state } = createMockRuntime();
+    const send = makeSend();
+    const batch = makeBatch({
+      messages: [makeMsg({ segments: [], text: "", imageUrls: ["https://x/a.png"] })],
+    });
+
+    await dispatchBatch(batch, {
+      account: makeAccount({ selfId: 999 }),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+    });
+
+    expect(state.lastDispatchArgs).not.toBeNull();
+    expect(send.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("still dispatches an empty-text turn when accumulated history gives it context", async () => {
+    const { runtime, state } = createMockRuntime();
+    const send = makeSend();
+    const batch = makeBatch({
+      messages: [makeMsg({ segments: [], text: "" })],
+      history: [makeMsg({ senderId: 1, senderName: "甲", segments: [{ type: "text", data: { text: "之前的聊天" } }] })],
+    });
+
+    await dispatchBatch(batch, {
+      account: makeAccount({ selfId: 999 }),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+    });
+
+    expect(state.lastDispatchArgs).not.toBeNull();
+    expect(state.lastEnvelopeArgs.body).toContain("之前的聊天");
+  });
+});
+
+// ── dispatchBatch — debug mode ───────────────────────────────────────────
+
+describe("dispatchBatch — debug mode", () => {
+  it("passes an outbound debug sink (wired to log.info) to sends when account.debug is true", async () => {
+    const { runtime } = createMockRuntime();
+    const send = makeSend();
+    const infos: string[] = [];
+
+    await dispatchBatch(makeBatch(), {
+      account: makeAccount({ debug: true }),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+      log: { info: (m) => infos.push(m) },
+    });
+
+    const arg = send.sendText.mock.calls[0]![0] as { debug?: { log: (l: string) => void } };
+    expect(typeof arg.debug?.log).toBe("function");
+
+    arg.debug!.log("raw-outbound-line");
+    expect(infos.some((m) => m.includes("raw-outbound-line"))).toBe(true);
+    expect(infos.some((m) => m.includes("[snowluma:default]"))).toBe(true);
+  });
+
+  it("passes no debug sink when account.debug is false (the default)", async () => {
+    const { runtime } = createMockRuntime();
+    const send = makeSend();
+
+    await dispatchBatch(makeBatch(), {
+      account: makeAccount(),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as unknown as PluginRuntime,
+      send,
+    });
+
+    const arg = send.sendText.mock.calls[0]![0] as { debug?: unknown };
+    expect(arg.debug).toBeUndefined();
   });
 });
 

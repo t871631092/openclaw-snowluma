@@ -70,10 +70,32 @@ export interface RealtimeModeConfig {
   maxChars?: number;
 }
 
+/**
+ * A rolling per-peer buffer of recent messages, kept entirely separately from
+ * the digest ("summary") queue. Every observed message accumulates here; when a
+ * reply is triggered the whole buffer is handed to that turn as historical chat
+ * context (and then drained), so the agent sees the surrounding conversation —
+ * including messages that never addressed the bot — not just the triggering line.
+ */
+export interface HistoryModeConfig {
+  /** Accumulate recent messages per peer as reply context. Default: true. */
+  enabled?: boolean;
+  /** Max messages of history kept per peer. Default: 20. */
+  maxMessages?: number;
+  /** Max total characters of history kept per peer. Default: 4000. */
+  maxChars?: number;
+  /**
+   * Drop history messages whose QQ timestamp is older than this many ms at
+   * snapshot time. `0` disables the age limit (count/chars still apply). Default: 0.
+   */
+  maxAgeMs?: number;
+}
+
 export interface ReceiveConfig {
   mention?: MentionModeConfig;
   digest?: DigestModeConfig;
   realtime?: RealtimeModeConfig;
+  history?: HistoryModeConfig;
 }
 
 /** Fully-defaulted receive configuration. */
@@ -84,6 +106,7 @@ export interface ResolvedReceiveConfig {
     prompt: string;
   };
   realtime: Required<RealtimeModeConfig>;
+  history: Required<HistoryModeConfig>;
 }
 
 // ── Quote / forward resolution ─────────────────────────────────────────────
@@ -133,6 +156,8 @@ export interface SnowLumaAccountConfig {
   textChunkLimit?: number;
   /** Request timeout for SnowLuma actions, in ms. Default: 30000. */
   requestTimeoutMs?: number;
+  /** Debug mode: log the raw payload of every outbound message the plugin sends. Default: false. */
+  debug?: boolean;
   /** Reconnect tuning handed to the SDK's WebSocket client. */
   reconnect?: {
     enabled?: boolean;
@@ -166,6 +191,7 @@ export interface ResolvedSnowLumaAccount {
   replyToTrigger: boolean;
   textChunkLimit: number;
   requestTimeoutMs: number;
+  debug: boolean;
   reconnect: { enabled: boolean; retries: number; minDelayMs: number; maxDelayMs: number };
   receive: ResolvedReceiveConfig;
   quote: ResolvedQuoteConfig;

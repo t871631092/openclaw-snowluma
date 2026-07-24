@@ -29,8 +29,9 @@
 | `replyToTrigger` | `boolean` | `true` | 回复是否以 QQ 引用（quote-reply）触发消息的形式发送；仅对 realtime 批次生效（digest 批次没有单条"触发消息"可引用）。 |
 | `textChunkLimit` | `number` | `4500` | 出站文本按此字符数分块发送（正整数，非法值回退默认值）。 |
 | `requestTimeoutMs` | `number` | `30000` | SnowLuma action 调用超时（毫秒）。 |
+| `debug` | `boolean` | `false` | 调试模式：把每条出站消息的原始载荷（目标 + 渲染出的 OneBot 段）打进日志。网关回复路径经 `log.info` 输出，主机直发路径（`channel.ts`）经 `console.info` 输出。仅 `true` 才算启用。 |
 | `reconnect` | `object` | 见下表 | WebSocket 重连调优，直接传给 `@snowluma/sdk` 的 `SnowLumaWebSocketClientOptions.reconnect`。 |
-| `receive` | `object` | 见下方三张表 | 三种接收模式的配置。 |
+| `receive` | `object` | 见下方各表 | 接收模式的配置（`mention` / `digest` / `realtime` / `history`）。 |
 | `quote` | `object` | 见下表 | 引用/合并转发主动解析配置。 |
 | `tools` | `object` | 见下表 | Agent 工具注册开关。 |
 | `accounts` | `object` | — | 额外命名账号，仅在 `default` 账号（顶层 `channels.snowluma`）下有意义，见[多账号](#多账号)。 |
@@ -78,7 +79,18 @@
 | `maxMessages` | `number` | `10` | 缓冲消息数达到此值立即 flush。 |
 | `maxChars` | `number` | `8000` | 缓冲文本（各消息 `text` 字段长度之和）超过此值立即 flush。 |
 
-窗口如何按 `${peerId}::${senderId}` 维度独立维护、为什么只有触发消息才能开窗，详见[三种接收模式 · realtime](/guide/receive-modes#realtime-亚秒级窗口聚合连发消息)。
+窗口如何按 `${peerId}::${senderId}` 维度独立维护、为什么只有触发消息才能开窗，详见[接收模式 · realtime](/guide/receive-modes#realtime-亚秒级窗口聚合连发消息)。
+
+## `receive.history` —— 回复时带入的历史聊天上下文 {#receive-history-回复时带入的历史聊天上下文}
+
+| Key | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `enabled` | `boolean` | `true` | 是否累积近期消息，并在触发回复时作为历史上下文一并带入。这个队列与 `digest`（总结队列）**分开存储**，互不消费。 |
+| `maxMessages` | `number` | `20` | 每个会话保留的历史消息条数上限（超出从最旧一端裁剪）。正整数。 |
+| `maxChars` | `number` | `4000` | 每个会话保留、以及带入 Agent 正文时的历史文本字符上限。正整数。 |
+| `maxAgeMs` | `number` | `0` | 带入那一刻按消息的 QQ 时间戳丢弃早于该时长（毫秒）的历史消息；`0` 表示不按时间丢弃（只受条数/字符数约束）。非负整数。 |
+
+历史如何累积、带入 `body`（而非 `rawBody`/`commandBody`）、并在带入后立即清空（drain-on-consume），详见[接收模式 · history](/guide/receive-modes#history-回复时一并带入的历史聊天上下文)。
 
 ## `quote` —— 引用与合并转发解析 {#quote-引用与合并转发解析}
 
@@ -182,6 +194,7 @@ Agent 工具（`snowluma_get_history` / `snowluma_get_group_members`）和 `reac
       "replyToTrigger": true,
       "textChunkLimit": 4500,
       "requestTimeoutMs": 30000,
+      "debug": false,
       "reconnect": {
         "enabled": true,
         "retries": 20,
@@ -214,6 +227,12 @@ Agent 工具（`snowluma_get_history` / `snowluma_get_group_members`）和 `reac
           "maxWindowMs": 3000,
           "maxMessages": 10,
           "maxChars": 8000
+        },
+        "history": {
+          "enabled": true,
+          "maxMessages": 20,
+          "maxChars": 4000,
+          "maxAgeMs": 0
         }
       },
       "quote": {

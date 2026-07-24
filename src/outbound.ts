@@ -129,6 +129,42 @@ export function chunkText(text: string, limit: number): string[] {
 
 const DEFAULT_CHUNK_LIMIT = 4500; // matches config.ts's default `textChunkLimit`
 
+// ── Debug logging ──────────────────────────────────────────────────────────
+//
+// When debug mode is on, callers pass an `OutboundDebug` sink and every send
+// records the raw payload it is about to hand to SnowLuma. This is the single
+// chokepoint both outbound paths (gateway replies via dispatch.ts, and
+// host-initiated sends via channel.ts) pass through, so wiring it here covers
+// both. The sink is just a `(line) => void` so it stays trivially testable and
+// leaves the "which log level / sink" decision to the caller.
+
+export interface OutboundDebug {
+  log: (line: string) => void;
+}
+
+/** SnowLuma message builders expose the raw OneBot segments via `.toSegments()`. */
+function serializeOutgoingMessage(message: unknown): unknown {
+  if (message && typeof (message as { toSegments?: unknown }).toSegments === "function") {
+    try {
+      return (message as { toSegments: () => unknown }).toSegments();
+    } catch {
+      // Fall through to the raw object if the builder can't render segments.
+    }
+  }
+  return message;
+}
+
+function emitOutboundDebug(debug: OutboundDebug | undefined, method: string, target: SendTarget, detail: Record<string, unknown>): void {
+  if (!debug) return;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify({ target, ...detail });
+  } catch {
+    serialized = String(detail);
+  }
+  debug.log(`[snowluma:outbound] ${method} ${formatTarget(target)} ${serialized}`);
+}
+
 // ── Sending ──────────────────────────────────────────────────────────────
 
 async function dispatchOutgoing(
@@ -152,8 +188,9 @@ export async function sendText(params: {
   text: string;
   replyToId?: string | number;
   chunkLimit?: number;
+  debug?: OutboundDebug;
 }): Promise<{ messageIds: string[] }> {
-  const { client, to, text: body, replyToId, chunkLimit = DEFAULT_CHUNK_LIMIT } = params;
+  const { client, to, text: body, replyToId, chunkLimit = DEFAULT_CHUNK_LIMIT, debug } = params;
   const target = parseTarget(to);
   const chunks = chunkText(body, chunkLimit);
 
@@ -161,7 +198,13 @@ export async function sendText(params: {
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
     const { reply, text } = getSnowLumaSdk();
-    const outgoing = i === 0 && replyToId !== undefined ? reply(replyToId).text(chunk) : text(chunk);
+    const chunkReplyToId = i === 0 ? replyToId : undefined;
+    const outgoing = chunkReplyToId !== undefined ? reply(chunkReplyToId).text(chunk) : text(chunk);
+    emitOutboundDebug(debug, target.kind === "group" ? "sendGroupMessage" : "sendPrivateMessage", target, {
+      chunk: `${i + 1}/${chunks.length}`,
+      replyToId: chunkReplyToId,
+      message: serializeOutgoingMessage(outgoing),
+    });
     const result = await dispatchOutgoing(client, target, outgoing);
     messageIds.push(String(result.message_id));
   }
@@ -225,8 +268,9 @@ export async function sendMedia(params: {
   to: string;
   mediaPath: string;
   caption?: string;
+  debug?: OutboundDebug;
 }): Promise<{ messageIds: string[] }> {
-  const { client, to, mediaPath, caption } = params;
+  const { client, to, mediaPath, caption, debug } = params;
   const target = parseTarget(to);
   const fileRef = toFileUri(mediaPath);
   const ext = extensionOf(mediaPath);
@@ -234,20 +278,25 @@ export async function sendMedia(params: {
   const messageIds: string[] = [];
   let mediaResult: unknown;
   if (IMAGE_EXTENSIONS.has(ext)) {
-    mediaResult = await dispatchOutgoing(client, target, getSnowLumaSdk().image(fileRef));
+    const outgoing = getSnowLumaSdk().image(fileRef);
+    emitOutboundDebug(debug, "sendImage", target, { mediaPath, fileRef, message: serializeOutgoingMessage(outgoing) });
+    mediaResult = await dispatchOutgoing(client, target, outgoing);
   } else if (AUDIO_EXTENSIONS.has(ext)) {
-    mediaResult = await dispatchOutgoing(client, target, getSnowLumaSdk().record(fileRef));
+    const outgoing = getSnowLumaSdk().record(fileRef);
+    emitOutboundDebug(debug, "sendRecord", target, { mediaPath, fileRef, message: serializeOutgoingMessage(outgoing) });
+    mediaResult = await dispatchOutgoing(client, target, outgoing);
+  } else if (target.kind === "group") {
+    emitOutboundDebug(debug, "upload_group_file", target, { mediaPath, fileRef, params: { group_id: target.id, file: fileRef } });
+    mediaResult = await client.raw("upload_group_file", { group_id: target.id, file: fileRef });
   } else {
-    mediaResult =
-      target.kind === "group"
-        ? await client.raw("upload_group_file", { group_id: target.id, file: fileRef })
-        : await client.raw("upload_private_file", { user_id: target.id, file: fileRef });
+    emitOutboundDebug(debug, "upload_private_file", target, { mediaPath, fileRef, params: { user_id: target.id, file: fileRef } });
+    mediaResult = await client.raw("upload_private_file", { user_id: target.id, file: fileRef });
   }
   const mediaId = extractSentId(mediaResult);
   if (mediaId !== undefined) messageIds.push(mediaId);
 
   if (caption && caption.trim()) {
-    const captionResult = await sendText({ client, to, text: caption });
+    const captionResult = await sendText({ client, to, text: caption, debug });
     messageIds.push(...captionResult.messageIds);
   }
 

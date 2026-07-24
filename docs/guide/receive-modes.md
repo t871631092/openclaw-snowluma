@@ -1,12 +1,15 @@
-# 三种接收模式
+# 接收模式
 
-这是本插件最核心、也最容易被误解的部分。三种模式定义在 `channels.snowluma.receive` 下（`src/triggers.ts` + `src/aggregator.ts`），**默认开关状态各不相同**，并且**可以同时组合使用**——同一条消息可以既被 realtime 聚合引擎处理，又被 digest 摘要引擎处理，两者互不影响、各自维护独立的缓冲窗口。
+这是本插件最核心、也最容易被误解的部分。接收模式定义在 `channels.snowluma.receive` 下（`src/triggers.ts` + `src/aggregator.ts`），**默认开关状态各不相同**，并且**可以同时组合使用**——同一条消息可以既被 realtime 聚合引擎处理、又被 digest 摘要引擎累积、还被 history 回复历史缓冲区记录，三者互不影响、各自维护独立的缓冲区。
 
 | 模式 | 默认状态 | 触发对象 | 一句话 |
 |---|---|---|---|
 | `mention` | 启用 | 单条消息的**判定逻辑** | 决定"要不要理这条消息" |
 | `realtime` | 启用 | 被 `mention` 判定为触发的消息 | 把连发的几条消息合并成一次 Agent 调用 |
 | `digest` | **关闭** | 范围内的**所有**消息，无关触发与否 | 定时/达量吐出一份聊天摘要 |
+| `history` | 启用 | **所有**消息，无关触发与否 | 攒下近期聊天，触发回复时作为历史上下文一并带入，然后清空 |
+
+> **`digest`（总结队列）与 `history`（回复队列）是两套分开存储的缓冲区。** `digest` 是"定时吐一份摘要"，按 `intervalMs`/`maxMessages` 到点或达量后 flush；`history` 是"回复时补一段上下文"，平时只累积、不发送，直到某条消息触发回复才把攒下的历史一次性塞进那次 Agent 调用并清空。两者各自独立累积同一批消息，互不消费对方的缓冲区。
 
 理解这张表最重要的一点：**`mention` 不是一个独立的"模式"，而是贯穿整个入站流程的判定函数**——`evaluateTrigger()` 对每一条入站消息都会跑一次，它的结果（`TriggerDecision`）同时喂给 `realtime` 引擎（决定要不要开窗/是否立即单独 flush）和被 `digest` 引擎忽略（`digest` 完全不看这个判定结果）。
 
@@ -194,6 +197,10 @@ flush 时，`buildDigestBody()`（`src/dispatch.ts`）把 `prompt` 和渲染成 
 
 不维护任何窗口状态：命中触发条件的消息会立即单独 flush（`messages` 数组只有它自己一条，`reason: "immediate"`）；未命中触发条件的消息则被直接丢弃，连临时缓冲都不会有。
 
+### 空内容触发会被静默跳过
+
+如果一次 realtime 批次组装完后**正文为空**（例如只 `@` 了机器人、剥离提及后什么都不剩，或回复机器人消息时正文为空），且**没有引用上下文、没有历史、也没有图片**，`dispatchBatch` 会直接跳过这次 Agent 调用、什么都不发送。否则这类空输入会被 OpenClaw 运行时判定为"空消息"，回一句英文的 `I didn't receive any text in your message. Please resend or add a caption.` 并被发回群里——跳过就是为了避免这句无意义的报错出现在聊天里。只要这条消息带了任何文字、引用、历史或图片，就照常处理。
+
 ### 时间线示例
 
 场景：`windowMs: 800`、`maxWindowMs: 3000`、群聊，用户 A 在 `10:00:00.000` 时 `@` 了机器人问了个问题，然后连续补充了两句。
@@ -207,9 +214,45 @@ flush 时，`buildDigestBody()`（`src/dispatch.ts`）把 `prompt` 和渲染成 
 
 对比：如果用户在窗口打开后持续每 500ms 补发一句，静默计时器永远不会自然到期，此时 `maxWindowMs: 3000` 会在 `+3000ms` 强制 flush，`reason: "max-window"`，防止一个说个不停的用户把窗口无限撑开。
 
-## 三种模式如何组合
+## `history`：回复时一并带入的历史聊天上下文 {#history-回复时一并带入的历史聊天上下文}
 
-`aggregator.accept(msg, trigger)` 对每一条通过了 `isPeerAllowed` 检查的消息，都会**依次**（而非互斥地）调用 `acceptRealtime` 和 `acceptDigest`：两次调用分别包在各自的 `try/catch` 里，一个引擎抛错不会影响另一个引擎继续处理。
+```json
+{
+  "receive": {
+    "history": {
+      "enabled": true,
+      "maxMessages": 20,
+      "maxChars": 4000,
+      "maxAgeMs": 0
+    }
+  }
+}
+```
+
+`history` 默认**启用**。它解决的问题是：realtime 引擎只会把"触发那一刻的连发消息"合并进一次 Agent 调用，机器人看不到此前那些**没有 @ 它、因此没触发回复**的闲聊。开启 `history` 后，插件会把范围内的**每一条**消息（无论是否触发）追加进一个**按 `peerId` 独立维护、与 digest 完全分开**的滚动缓冲区（`src/aggregator.ts` 的 `historyBuffers`）。
+
+### 累积、带入、清空
+
+- **累积**：`acceptHistory()` 对每条消息都追加进该会话的缓冲区，并按 `maxMessages`（条数）和 `maxChars`（总字符数）从最旧的一端裁剪。这个引擎不看 `TriggerDecision`，也不开计时器——它只是攒着。
+- **带入**：当这个会话产生一次 realtime 回复（`flushRealtimeWindow` 或 `realtime.enabled: false` 下的 `immediate` 立即 flush）时，`takeHistoryForReply()` 把缓冲区里**除本批 `messages` 之外**的历史消息快照出来，挂到 `batch.history` 上；`buildRealtimeBody()`（`src/dispatch.ts`）再把它渲染成 `[HH:mm:ss] 昵称(qq): 文本` 的转录块，夹在 `【历史聊天记录…】`／`【以上为历史消息…】` 两行提示之间，**只拼进 Agent 可见的 `body`**——`rawBody`/`commandBody` 保持只有用户本条输入，命令解析器因此永远只看到真正的输入、看不到历史。
+- **清空**：快照的同一时刻缓冲区被清空（drain-on-consume）。因为攒下的内容此刻已经交给了 Agent（要么作为历史、要么作为本批消息），而 Agent 自身的会话记忆会从这里接续上下文，再留着只会在下次回复时重复发送、白白浪费 token。
+
+`maxAgeMs` 默认 `0`（不按时间丢弃，只受条数/字符数约束）；设为正值时，带入那一刻会按消息的 QQ 时间戳丢掉早于该时长的旧消息，避免把很久以前的聊天当成"当前上下文"。`enabled: false` 时整个引擎被跳过：不累积、不带入，`batch.history` 恒为空。
+
+### 时间线示例
+
+场景：群 `20000002`，`selfId` 已知，`history` 默认开启，realtime 默认开启。
+
+| 时刻 | 事件 | history 缓冲区 / 本次回复 |
+|---|---|---|
+| `10:00:00` | 用户 A "今晚几点集合"（未 @，未触发） | 缓冲区 `[A]`，不回复 |
+| `10:00:05` | 用户 B "我八点有空"（未 @，未触发） | 缓冲区 `[A, B]`，不回复 |
+| `10:00:10` | 用户 C "@机器人 帮我定个八点半的提醒"（触发） | realtime 开窗；静默到期 flush 时，`batch.messages = [C]`、`batch.history = [A, B]`，Agent 看到前两句闲聊作为上下文；随后缓冲区被清空 |
+| `10:00:30` | 用户 D "顺便问下天气"（未 @，未触发） | 缓冲区重新从 `[D]` 开始攒（此前的 A/B/C 不会再重复带入） |
+
+## 各接收模式如何组合
+
+`aggregator.accept(msg, trigger)` 对每一条通过了 `isPeerAllowed` 检查的消息，都会**依次**（而非互斥地）调用 `acceptHistory`、`acceptRealtime` 和 `acceptDigest`：三次调用分别包在各自的 `try/catch` 里，一个引擎抛错不会影响其它引擎继续处理。`acceptHistory` 排在最前，这样一条消息即便立刻触发同步 flush（`immediate` / `max-messages` / `max-chars`），它也已经在缓冲区里、能被正确地从历史快照中排除（作为本批输入而非历史）。
 
 一个典型的组合场景：群里同时开启了 `mention`（默认）和 `digest`（需手动开启）。用户 `@` 机器人问了个问题——这条消息**同时**：
 

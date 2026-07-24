@@ -35,7 +35,7 @@ runtime, delivers the reply) → `outbound.ts` (send back to QQ).
 | `client.ts` | Builds `SnowLumaWebSocketClient`/`SnowLumaHttpClient` from a resolved account; the action-client registry the gateway publishes its live socket into. |
 | `segments.ts` | Normalizes raw OneBot message payloads (array/CQ-string/plain-string) into `SnowLumaMessageSegment[]` / `NormalizedMessage`; renders segments back to display text. |
 | `triggers.ts` | Pure decision logic: `evaluateTrigger` (mention/keyword/direct/reply-to-self), no I/O. |
-| `aggregator.ts` | Two independent windowing engines (realtime coalescing, digest summarisation) sharing one `accept()` entry point; timers are injected. |
+| `aggregator.ts` | Three independent engines sharing one `accept()` entry point: realtime coalescing, digest summarisation, and a rolling reply-history buffer (drained into a realtime batch's `history` on flush). Timers are injected. |
 | `quote.ts` | Actively resolves quoted/forwarded messages via `get_msg`/`get_forward_msg`, with depth/node/char budgets. |
 | `dispatch.ts` | Turns one `AggregatedBatch` into a single agent turn via `pluginRuntime.channel.*`, then delivers the reply back to QQ. |
 | `gateway.ts` | Owns one long-lived connection per account; wires client events → triggers → aggregator → dispatch; tracks self-sent message ids. |

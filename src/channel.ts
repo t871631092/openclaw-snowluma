@@ -19,10 +19,21 @@ import {
 import { snowLumaConfigSchema } from "./config-schema.js";
 import { startGateway } from "./gateway.js";
 import { parseTarget, reactToMessage, sendMedia as outboundSendMedia, sendText as outboundSendText } from "./outbound.js";
+import type { OutboundDebug } from "./outbound.js";
 import { createSnowLumaAgentTools } from "./tools.js";
 import type { ResolvedSnowLumaAccount, SnowLumaHostConfig } from "./types.js";
 
 const SNOWLUMA_MESSAGE_ACTIONS = ["react"] as const;
+
+/**
+ * Debug sink for host-initiated sends. Unlike the gateway reply path (which has
+ * an injected `log`), the `ChannelOutboundContext` carries no logger, so raw
+ * outbound payloads go to `console` — the operator-visible sink on a gateway.
+ */
+function outboundDebugFor(account: ResolvedSnowLumaAccount): OutboundDebug | undefined {
+  if (!account.debug) return undefined;
+  return { log: (line: string) => console.info(`[snowluma:${account.accountId}] ${line}`) };
+}
 
 function createActionResult<TDetails>(text: string, details: TDetails) {
   return {
@@ -132,6 +143,7 @@ export const snowLumaPlugin: ChannelPlugin<ResolvedSnowLumaAccount> = {
           text: ctx.text,
           replyToId: ctx.replyToId ?? undefined,
           chunkLimit: account.textChunkLimit,
+          debug: outboundDebugFor(account),
         });
         const messageId = result.messageIds[result.messageIds.length - 1];
         if (!messageId) {
@@ -154,6 +166,7 @@ export const snowLumaPlugin: ChannelPlugin<ResolvedSnowLumaAccount> = {
           to: ctx.to,
           mediaPath: ctx.mediaUrl,
           caption: ctx.text,
+          debug: outboundDebugFor(account),
         });
         const messageId = result.messageIds[0];
         if (!messageId) {

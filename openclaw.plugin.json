@@ -100,6 +100,11 @@
             "default": 30000,
             "description": "Request timeout for SnowLuma actions, in ms. Default: 30000."
           },
+          "debug": {
+            "type": "boolean",
+            "default": false,
+            "description": "Debug mode: log the raw payload of every outbound message the plugin sends. Default: false."
+          },
           "reconnect": {
             "type": "object",
             "additionalProperties": false,
@@ -277,9 +282,39 @@
                     "description": "Flush immediately once the buffered text exceeds this many characters. Default: 8000."
                   }
                 }
+              },
+              "history": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Rolling per-peer buffer of recent messages, kept separately from the digest queue and handed to each triggered reply as historical chat context, then drained.",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Accumulate recent messages per peer and include them as context when a reply is triggered. Default: true."
+                  },
+                  "maxMessages": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "default": 20,
+                    "description": "Max messages of history kept per peer. Default: 20."
+                  },
+                  "maxChars": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "default": 4000,
+                    "description": "Max total characters of history kept and injected per peer. Default: 4000."
+                  },
+                  "maxAgeMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Drop history messages older than this many ms (by QQ timestamp) at snapshot time. 0 disables the age limit. Default: 0."
+                  }
+                }
               }
             },
-            "description": "The three receive modes: mention/keyword, digest, and realtime coalescing."
+            "description": "Receive modes (mention/keyword, digest, realtime coalescing) plus the reply-history buffer."
           },
           "quote": {
             "type": "object",
@@ -413,6 +448,11 @@
                   "exclusiveMinimum": 0,
                   "default": 30000,
                   "description": "Request timeout for SnowLuma actions, in ms. Default: 30000."
+                },
+                "debug": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Debug mode: log the raw payload of every outbound message the plugin sends. Default: false."
                 },
                 "reconnect": {
                   "type": "object",
@@ -588,6 +628,36 @@
                           "exclusiveMinimum": 0,
                           "default": 8000,
                           "description": "Flush immediately once the buffered text exceeds this many characters. Default: 8000."
+                        }
+                      }
+                    },
+                    "history": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "Rolling per-peer buffer of recent messages, kept separately from the digest queue and handed to each triggered reply as historical chat context, then drained.",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "default": true,
+                          "description": "Accumulate recent messages per peer and include them as context when a reply is triggered. Default: true."
+                        },
+                        "maxMessages": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "default": 20,
+                          "description": "Max messages of history kept per peer. Default: 20."
+                        },
+                        "maxChars": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "default": 4000,
+                          "description": "Max total characters of history kept and injected per peer. Default: 4000."
+                        },
+                        "maxAgeMs": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "default": 0,
+                          "description": "Drop history messages older than this many ms (by QQ timestamp) at snapshot time. 0 disables the age limit. Default: 0."
                         }
                       }
                     }

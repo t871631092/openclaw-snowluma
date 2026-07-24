@@ -46,6 +46,12 @@ export const RECEIVE_DEFAULTS: ResolvedReceiveConfig = {
     maxMessages: 10,
     maxChars: 8_000,
   },
+  history: {
+    enabled: true,
+    maxMessages: 20,
+    maxChars: 4_000,
+    maxAgeMs: 0,
+  },
 };
 
 export const QUOTE_DEFAULTS: ResolvedQuoteConfig = {
@@ -84,6 +90,7 @@ function resolveReceive(raw: SnowLumaAccountConfig["receive"]): ResolvedReceiveC
   const mention = raw?.mention ?? {};
   const digest = raw?.digest ?? {};
   const realtime = raw?.realtime ?? {};
+  const history = raw?.history ?? {};
 
   const keywordMatch = mention.keywordMatch;
   const scope = digest.scope;
@@ -138,6 +145,12 @@ function resolveReceive(raw: SnowLumaAccountConfig["receive"]): ResolvedReceiveC
       maxWindowMs: positiveInt(realtime.maxWindowMs, RECEIVE_DEFAULTS.realtime.maxWindowMs),
       maxMessages: positiveInt(realtime.maxMessages, RECEIVE_DEFAULTS.realtime.maxMessages),
       maxChars: positiveInt(realtime.maxChars, RECEIVE_DEFAULTS.realtime.maxChars),
+    },
+    history: {
+      enabled: bool(history.enabled, RECEIVE_DEFAULTS.history.enabled),
+      maxMessages: positiveInt(history.maxMessages, RECEIVE_DEFAULTS.history.maxMessages),
+      maxChars: positiveInt(history.maxChars, RECEIVE_DEFAULTS.history.maxChars),
+      maxAgeMs: nonNegativeInt(history.maxAgeMs, RECEIVE_DEFAULTS.history.maxAgeMs),
     },
   };
 }
@@ -223,6 +236,7 @@ export function resolveSnowLumaAccount(
     replyToTrigger: bool(accountConfig.replyToTrigger, true),
     textChunkLimit: positiveInt(accountConfig.textChunkLimit, 4500),
     requestTimeoutMs: positiveInt(accountConfig.requestTimeoutMs, 30_000),
+    debug: bool(accountConfig.debug, false),
     reconnect: {
       enabled: bool(reconnect.enabled, true),
       // Unset means "retry forever"; an explicit number — including 0, meaning

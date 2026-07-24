@@ -18,6 +18,13 @@ export interface AggregatedBatch {
   peerKind: PeerKind;
   groupId?: number;
   messages: NormalizedMessage[];
+  /**
+   * Prior messages from this peer's rolling reply-history buffer, oldest first,
+   * excluding the batch's own `messages`. Only ever populated for realtime
+   * batches — it is the accumulated chat context handed to the reply turn.
+   * Empty/undefined when history is disabled or nothing preceded the batch.
+   */
+  history?: NormalizedMessage[];
   trigger?: TriggerDecision;
   /** Why this batch flushed: "quiet" | "max-window" | "max-messages" | "max-chars" | "interval" | "immediate" | "shutdown" (or a caller-supplied reason passed to `flushAll`). */
   reason: string;
@@ -43,6 +50,8 @@ export interface Aggregator {
   pendingRealtimeKeys(): string[];
   /** Introspection for tests: open digest window keys (`peerId`). */
   pendingDigestKeys(): string[];
+  /** Introspection for tests: peers with a non-empty reply-history buffer (`peerId`). */
+  pendingHistoryKeys(): string[];
 }
 
 interface RealtimeWindow {
@@ -67,6 +76,14 @@ interface DigestWindow {
   intervalTimer?: unknown;
 }
 
+/**
+ * Rolling per-peer buffer of recent messages, kept independently of the digest
+ * queue. Drained into a realtime batch's `history` the moment that peer replies.
+ */
+interface HistoryBuffer {
+  messages: NormalizedMessage[];
+}
+
 function realtimeKey(peerId: string, senderId: number): string {
   return `${peerId}::${senderId}`;
 }
@@ -84,6 +101,7 @@ export function createAggregator(options: AggregatorOptions): Aggregator {
 
   const realtimeWindows = new Map<string, RealtimeWindow>();
   const digestWindows = new Map<string, DigestWindow>();
+  const historyBuffers = new Map<string, HistoryBuffer>();
 
   function clearTimer(handle: unknown): void {
     if (handle !== undefined) cancelTimeout(handle);
@@ -115,6 +133,7 @@ export function createAggregator(options: AggregatorOptions): Aggregator {
       peerKind: win.peerKind,
       groupId: win.groupId,
       messages: win.messages,
+      history: takeHistoryForReply(win.peerId, win.messages),
       trigger: win.trigger,
       reason,
     });
@@ -127,6 +146,7 @@ export function createAggregator(options: AggregatorOptions): Aggregator {
       peerKind: msg.peerKind,
       groupId: msg.groupId,
       messages: [msg],
+      history: takeHistoryForReply(msg.peerId, [msg]),
       trigger,
       reason: "immediate",
     });
@@ -264,10 +284,67 @@ export function createAggregator(options: AggregatorOptions): Aggregator {
     }
   }
 
+  // ── reply-history engine ───────────────────────────────────────────────
+  //
+  // A rolling per-peer buffer, entirely separate from the digest queue above.
+  // Every observed message accumulates here; when that peer next produces a
+  // realtime reply, the whole buffer (minus the batch's own messages) is handed
+  // to the turn as context and then drained — so a reply carries the surrounding
+  // conversation, including lines that never addressed the bot.
+
+  function trimHistoryBuffer(buf: HistoryBuffer): void {
+    const cfg = account.receive.history;
+    while (buf.messages.length > cfg.maxMessages) buf.messages.shift();
+    while (buf.messages.length > 1 && totalChars(buf.messages) > cfg.maxChars) {
+      buf.messages.shift();
+    }
+  }
+
+  function acceptHistory(msg: NormalizedMessage): void {
+    if (!account.receive.history.enabled) return;
+    const key = msg.peerId;
+    let buf = historyBuffers.get(key);
+    if (!buf) {
+      buf = { messages: [] };
+      historyBuffers.set(key, buf);
+    }
+    buf.messages.push(msg);
+    trimHistoryBuffer(buf);
+  }
+
+  /**
+   * Snapshot a peer's accumulated history for a reply and drain the buffer.
+   * Excludes the batch's own messages (they are the current input, not context)
+   * and, when `maxAgeMs > 0`, any message older than that relative to `now()`.
+   */
+  function takeHistoryForReply(peerId: string, batchMessages: NormalizedMessage[]): NormalizedMessage[] {
+    const cfg = account.receive.history;
+    if (!cfg.enabled) return [];
+    const buf = historyBuffers.get(peerId);
+    if (!buf) return [];
+    // Draining is the point: everything up to now has been handed to the agent
+    // (as history or as the batch itself), so keeping it would only re-send the
+    // same context on the next reply. The agent's own session memory carries
+    // continuity from here.
+    historyBuffers.delete(peerId);
+
+    const batchIds = new Set(batchMessages.map((m) => m.messageId));
+    const cutoffSeconds = cfg.maxAgeMs > 0 ? (now() - cfg.maxAgeMs) / 1000 : Number.NEGATIVE_INFINITY;
+    return buf.messages.filter((m) => !batchIds.has(m.messageId) && m.time >= cutoffSeconds);
+  }
+
   // ── public surface ─────────────────────────────────────────────────────
 
   return {
     accept(msg, trigger) {
+      // History accumulates first so a synchronous realtime flush (immediate /
+      // max-messages / max-chars) triggered by this same message can already
+      // see it in the buffer — then exclude it from the snapshot as its own input.
+      try {
+        acceptHistory(msg);
+      } catch (err) {
+        log?.error?.(`[snowluma] history accept failed: ${String(err)}`);
+      }
       try {
         acceptRealtime(msg, trigger);
       } catch (err) {
@@ -301,6 +378,7 @@ export function createAggregator(options: AggregatorOptions): Aggregator {
       }
       realtimeWindows.clear();
       digestWindows.clear();
+      historyBuffers.clear();
     },
 
     pendingRealtimeKeys() {
@@ -309,6 +387,10 @@ export function createAggregator(options: AggregatorOptions): Aggregator {
 
     pendingDigestKeys() {
       return Array.from(digestWindows.keys());
+    },
+
+    pendingHistoryKeys() {
+      return Array.from(historyBuffers.keys());
     },
   };
 }

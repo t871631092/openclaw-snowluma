@@ -94,6 +94,32 @@ function renderMessageText(msg: NormalizedMessage): string {
   return renderSegments(msg.segments) || msg.text;
 }
 
+/** A `[HH:mm:ss] name(id): text` transcript line, shared by the digest and reply-history blocks. */
+function renderTranscriptLine(msg: NormalizedMessage): string {
+  return `[${formatHHMMSS(msg.time)}] ${msg.senderName}(${msg.senderId}): ${renderMessageText(msg)}`;
+}
+
+const HISTORY_HEADER = "【历史聊天记录（仅供参考上下文，请勿直接回复其中的旧消息）】";
+const HISTORY_FOOTER = "【以上为历史消息；请针对下面这条最新消息进行回复】";
+
+/**
+ * Render the peer's accumulated reply-history buffer into a transcript block,
+ * trimmed from the oldest end to `history.maxChars`. Empty string when there is
+ * no history to show.
+ */
+function renderHistoryReference(
+  history: NormalizedMessage[] | undefined,
+  account: ResolvedSnowLumaAccount,
+): string {
+  if (!history || history.length === 0) return "";
+  const limit = account.receive.history.maxChars;
+  const lines = history.map(renderTranscriptLine);
+  while (lines.length > 1 && lines.join("\n").length > limit) lines.shift();
+  let transcript = lines.join("\n");
+  if (transcript.length > limit) transcript = transcript.slice(-limit);
+  return transcript;
+}
+
 function buildRealtimeBody(
   batch: AggregatedBatch,
   account: ResolvedSnowLumaAccount,
@@ -103,7 +129,14 @@ function buildRealtimeBody(
   // "Leading" is singular and applies once, to the front of the whole batch —
   // only the message that opened the window can plausibly start with "@bot".
   const text = stripLeadingMention(joined, account.selfId);
-  const body = quoteText ? `${quoteText}\n${text}` : text;
+  const currentBlock = quoteText ? `${quoteText}\n${text}` : text;
+  // Accumulated chat context is prepended to `body` only — never to
+  // `rawBody`/`commandBody`, so the command parser still sees just the user's
+  // actual input, not the surrounding history.
+  const historyText = renderHistoryReference(batch.history, account);
+  const body = historyText
+    ? `${HISTORY_HEADER}\n${historyText}\n${HISTORY_FOOTER}\n${currentBlock}`
+    : currentBlock;
   const imageUrls = batch.messages.flatMap((m) => m.imageUrls);
   return { body, rawBody: text, commandBody: text, imageUrls };
 }
@@ -114,9 +147,7 @@ function buildDigestBody(
 ): { body: string; rawBody: string; commandBody: string; imageUrls: string[] } {
   const { prompt, maxTranscriptChars } = account.receive.digest;
 
-  const lines = batch.messages.map(
-    (m) => `[${formatHHMMSS(m.time)}] ${m.senderName}(${m.senderId}): ${renderMessageText(m)}`,
-  );
+  const lines = batch.messages.map(renderTranscriptLine);
   // The aggregator already trims its buffer against `maxTranscriptChars`, but
   // that budget is measured on raw message text — the rendered
   // "[HH:mm:ss] name(id): text" lines are longer, so re-trim the actual
@@ -174,6 +205,12 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
     const resolveQuote = deps.resolveQuote ?? defaultResolveQuoteContext;
     const send = deps.send ?? { sendText: defaultSendText, sendMedia: defaultSendMedia };
 
+    // In debug mode, every outbound send records its raw payload. Emitted at
+    // `info` level so it is actually visible when the operator flips the flag on.
+    const outboundDebug = account.debug
+      ? { log: (line: string) => log?.info?.(`[snowluma:${account.accountId}] ${line}`) }
+      : undefined;
+
     const first = batch.messages[0]!;
     const last = batch.messages[batch.messages.length - 1]!;
     const address = `snowluma:${batch.peerId}`;
@@ -201,6 +238,21 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
     }
 
     const composed = buildBatchBody(batch, account, quoteText);
+
+    // A realtime turn that composed to nothing actionable — no text (e.g. a bare
+    // `@bot` whose only content was the mention we stripped, or a reply-to-self
+    // with an empty body), no quote, no history, and no image — would reach the
+    // OpenClaw runtime as an empty inbound turn. The runtime answers that with a
+    // canned "I didn't receive any text in your message. Please resend or add a
+    // caption." which then gets posted back to QQ. Skip the dispatch entirely so
+    // nothing is sent. (Digest turns always carry their prompt, so this never
+    // fires for them.)
+    if (batch.kind === "realtime" && composed.body.trim().length === 0 && composed.imageUrls.length === 0) {
+      log?.debug?.(
+        `[snowluma:${account.accountId}] skipping empty realtime turn for ${batch.peerId} (no text/quote/history/media)`,
+      );
+      return;
+    }
 
     const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
     const envelopeBody = runtime.channel.reply.formatInboundEnvelope({
@@ -253,7 +305,7 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
     const sendErrorNotice = async (errorText: string) => {
       try {
-        await send.sendText({ client, to: address, text: errorText, chunkLimit: account.textChunkLimit });
+        await send.sendText({ client, to: address, text: errorText, chunkLimit: account.textChunkLimit, debug: outboundDebug });
       } catch (sendErr) {
         log?.error?.(`[snowluma:${account.accountId}] failed to send error notice: ${String(sendErr)}`);
       }
@@ -279,7 +331,7 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
           for (const mediaPath of mediaPaths) {
             try {
-              await send.sendMedia({ client, to: address, mediaPath });
+              await send.sendMedia({ client, to: address, mediaPath, debug: outboundDebug });
             } catch (err) {
               log?.error?.(`[snowluma:${account.accountId}] media send failed: ${String(err)}`);
             }
@@ -296,6 +348,7 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
                 text: replyText,
                 replyToId,
                 chunkLimit: account.textChunkLimit,
+                debug: outboundDebug,
               });
               runtime.channel.activity.record({
                 channel: "snowluma",

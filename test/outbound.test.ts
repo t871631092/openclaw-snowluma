@@ -211,6 +211,89 @@ describe("sendText", () => {
   });
 });
 
+// ── sendText / sendMedia — debug mode ──────────────────────────────────────
+
+describe("outbound debug mode", () => {
+  it("emits one raw-payload debug line per chunk, tagged with the target and chunk index", async () => {
+    const { client } = makeFakeClient();
+    const lines: string[] = [];
+
+    await sendText({ client, to: "group:1", text: "a".repeat(25), chunkLimit: 10, debug: { log: (l) => lines.push(l) } });
+
+    expect(lines).toHaveLength(3);
+    for (const line of lines) expect(line).toContain("sendGroupMessage snowluma:group:1");
+    expect(lines[0]).toContain('"chunk":"1/3"');
+    expect(lines[2]).toContain('"chunk":"3/3"');
+  });
+
+  it("serializes the raw OneBot segments of the outgoing message", async () => {
+    const { client } = makeFakeClient();
+    const lines: string[] = [];
+
+    await sendText({ client, to: "group:1", text: "hello", debug: { log: (l) => lines.push(l) } });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('"type":"text"');
+    expect(lines[0]).toContain("hello");
+  });
+
+  it("records the reply segment on the first chunk only", async () => {
+    const { client } = makeFakeClient();
+    const lines: string[] = [];
+
+    await sendText({
+      client,
+      to: "group:1",
+      text: "a".repeat(25),
+      chunkLimit: 10,
+      replyToId: "555",
+      debug: { log: (l) => lines.push(l) },
+    });
+
+    expect(lines[0]).toContain('"replyToId":"555"');
+    expect(lines[0]).toContain('"type":"reply"');
+    expect(lines[1]).not.toContain("replyToId");
+    expect(lines[1]).not.toContain('"type":"reply"');
+  });
+
+  it("emits nothing extra and behaves normally when no debug sink is given", async () => {
+    const { client, raw } = makeFakeClient();
+
+    const result = await sendText({ client, to: "group:1", text: "hi" });
+
+    expect(result.messageIds).toEqual(["1"]);
+    expect(raw.sendGroupMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("debug-logs the image send and the caption send separately", async () => {
+    const { client } = makeFakeClient();
+    const lines: string[] = [];
+
+    await sendMedia({
+      client,
+      to: "group:1",
+      mediaPath: "https://example.com/pic.png",
+      caption: "look",
+      debug: { log: (l) => lines.push(l) },
+    });
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("sendImage snowluma:group:1");
+    expect(lines[1]).toContain("sendGroupMessage snowluma:group:1");
+  });
+
+  it("debug-logs the raw params of the file-upload fallback", async () => {
+    const { client } = makeFakeClient();
+    const lines: string[] = [];
+
+    await sendMedia({ client, to: "group:1", mediaPath: "https://example.com/doc.pdf", debug: { log: (l) => lines.push(l) } });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("upload_group_file");
+    expect(lines[0]).toContain('"group_id":1');
+  });
+});
+
 // ── sendMedia ────────────────────────────────────────────────────────────
 
 describe("sendMedia", () => {

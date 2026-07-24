@@ -86,12 +86,23 @@ const realtimeSchema: JsonSchemaLiteral = {
   },
 };
 
+const historySchema: JsonSchemaLiteral = {
+  type: "object",
+  properties: {
+    enabled: { type: "boolean", default: true, description: "累积每个会话的近期消息，触发回复时作为历史聊天上下文一并带入（与摘要队列分开存储）" },
+    maxMessages: { type: "number", default: 20, description: "每个会话保留的历史消息条数上限" },
+    maxChars: { type: "number", default: 4000, description: "每个会话保留/带入的历史文本字符上限" },
+    maxAgeMs: { type: "number", default: 0, description: "带入时丢弃早于该时长（毫秒）的历史消息；0 表示不按时间丢弃" },
+  },
+};
+
 const receiveSchema: JsonSchemaLiteral = {
   type: "object",
   properties: {
     mention: mentionSchema,
     digest: digestSchema,
     realtime: realtimeSchema,
+    history: historySchema,
   },
 };
 
@@ -130,6 +141,7 @@ function accountFieldProperties(): Record<string, JsonSchemaLiteral> {
     replyToTrigger: { type: "boolean", default: true, description: "以引用回复的形式发送回复" },
     textChunkLimit: { type: "number", default: 4500, description: "出站文本按该字符数分段发送" },
     requestTimeoutMs: { type: "number", default: 30000, description: "SnowLuma 动作请求超时时间（毫秒）" },
+    debug: { type: "boolean", default: false, description: "调试模式：在日志中打印每条出站消息的原始内容" },
     reconnect: reconnectSchema,
     receive: receiveSchema,
     quote: quoteSchema,
