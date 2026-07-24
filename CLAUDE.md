@@ -46,7 +46,7 @@ runtime, delivers the reply) → `outbound.ts` (send back to QQ).
 | `plugin-entry.ts` | Local, `openclaw`-free port of `defineChannelPluginEntry` (+ `emptyChannelConfigSchema`) used by `index.ts`, so `index.js`'s graph imports no `openclaw/*` at runtime — see hard constraints. |
 | `runtime.ts` | Module-level `PluginRuntime` store (`setSnowLumaRuntime`/`getSnowLumaRuntime`/...) that `dispatch.ts` reads from; hand-rolled to stay `openclaw`-free. |
 | `channel.ts` | The `ChannelPlugin` surface itself — wires config/setup/outbound/actions/agentTools/gateway/status together for the OpenClaw host. |
-| `config-schema.ts` | `channels.snowluma` control-UI `configSchema` (`snowLumaPlugin.configSchema`) — plain JSON Schema literals mirroring `SnowLumaAccountConfig`/`SnowLumaChannelConfig`, using only node shapes the host's config-editor renderer supports (`type`/`properties`/`items`/`enum`/`additionalProperties`/scalar `anyOf`). `ChannelConfigSchema`/`ChannelConfigUiHint` are type-only — see hard constraints. |
+| `config-schema.ts` | `snowLumaPlugin.configSchema` — plain JSON Schema literals mirroring `SnowLumaAccountConfig`/`SnowLumaChannelConfig`. NOTE: the control-UI config editor does NOT read this — it reads the MANIFEST (`openclaw.plugin.json` `channelConfigs.snowluma.schema`, see below); keep both in sync. `ChannelConfigSchema`/`ChannelConfigUiHint` are type-only — see hard constraints. |
 
 `index.ts` and `setup-entry.ts` at the project root are the plugin's two OpenClaw entry points
 (`openclaw.extensions` and `openclaw.setupEntry` in `package.json`).
@@ -91,6 +91,17 @@ runtime, delivers the reply) → `outbound.ts` (send back to QQ).
   values from `getSnowLumaSdk()`; and `typebox` is type-only (tools.ts ships plain JSON Schema
   literals). `test/load-graph.test.ts` enforces all of this for both entry graphs. (History:
   `Cannot find module 'typebox'` up to 0.1.3; fixed structurally in 0.1.4.)
+- **The control-UI config editor reads its schema from the MANIFEST, and that schema may not use
+  `$ref`.** The gateway (verified against openclaw 2026.7.1) builds its `config.schema` response for
+  `channels.snowluma` from `openclaw.plugin.json` → `channelConfigs.snowluma.{schema,uiHints}` via the
+  plugin-metadata/manifest registry — it never consults the loaded module's
+  `snowLumaPlugin.configSchema` for this. The UI's form renderer supports only a JSON-Schema subset
+  (`type` object/array/scalars, `enum`, scalar-branch `anyOf`/`oneOf`, `additionalProperties` as map
+  schema) and resolves NO `$ref`/`$defs`/`allOf` — an unsupported node renders as "Unsupported schema
+  node. Use Raw mode." instead of fields (history: 0.1.5's manifest used `$ref`/`$defs` and exactly
+  those five object-valued fields broke; 0.1.6 inlined them). `test/manifest-schema.test.ts` ports the
+  UI normalizer and enforces renderability plus the gateway's 256KB schema budget. Keep
+  `src/config-schema.ts` (the module-level twin) in sync when editing the manifest schema.
 
 ## `@snowluma/sdk` ESM patch
 
