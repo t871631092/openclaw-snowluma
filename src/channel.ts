@@ -18,7 +18,13 @@ import {
 } from "./config.js";
 import { snowLumaConfigSchema } from "./config-schema.js";
 import { startGateway } from "./gateway.js";
-import { parseTarget, reactToMessage, sendMedia as outboundSendMedia, sendText as outboundSendText } from "./outbound.js";
+import {
+  isOpenClawEmptyInputNotice,
+  parseTarget,
+  reactToMessage,
+  sendMedia as outboundSendMedia,
+  sendText as outboundSendText,
+} from "./outbound.js";
 import type { OutboundDebug } from "./outbound.js";
 import { createSnowLumaAgentTools } from "./tools.js";
 import type { ResolvedSnowLumaAccount, SnowLumaHostConfig } from "./types.js";
@@ -134,6 +140,12 @@ export const snowLumaPlugin: ChannelPlugin<ResolvedSnowLumaAccount> = {
     deliveryMode: "direct",
     textChunkLimit: 4500,
     sendText: async (ctx) => {
+      // Same suppression as the gateway reply path, for host-initiated sends:
+      // never relay OpenClaw's canned empty-inbound notice. Return benignly
+      // (nothing sent) rather than letting the empty-messageId guard below throw.
+      if (isOpenClawEmptyInputNotice(ctx.text)) {
+        return { channel: "snowluma", messageId: "" };
+      }
       const account = resolveSnowLumaAccount(asHostConfig(ctx.cfg), ctx.accountId);
       const { client, release } = await acquireActionClient(account);
       try {

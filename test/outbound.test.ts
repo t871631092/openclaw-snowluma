@@ -98,9 +98,21 @@ describe("chunkText", () => {
     expect(chunkText("hello", 100)).toEqual(["hello"]);
   });
 
-  it("prefers splitting on the newline nearest the limit", () => {
+  it("keeps multi-line text that fits within the limit as a single chunk", () => {
+    // Regression: a message shorter than the limit must never be split just
+    // because it contains newlines. Previously the newline preference fired even
+    // when the whole text fit, scattering one reply across several QQ sends.
+    expect(chunkText("world\nfoo", 100)).toEqual(["world\nfoo"]);
+
+    const multiline = "第一段\n\n第二段\n\n第三段";
+    expect(chunkText(multiline, 4500)).toEqual([multiline]);
+  });
+
+  it("prefers splitting on the newline nearest the limit, then keeps the fitting remainder whole", () => {
+    // Text longer than the limit *must* break: it breaks at the newline nearest
+    // the limit ("hello\n"), and the remaining "world\nfoo" fits so stays intact.
     const result = chunkText("hello\nworld\nfoo", 10);
-    expect(result).toEqual(["hello\n", "world\n", "foo"]);
+    expect(result).toEqual(["hello\n", "world\nfoo"]);
     expect(result.join("")).toBe("hello\nworld\nfoo");
   });
 
@@ -280,6 +292,27 @@ describe("outbound debug mode", () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain("sendImage snowluma:group:1");
     expect(lines[1]).toContain("sendGroupMessage snowluma:group:1");
+  });
+
+  it("suppresses OpenClaw's canned empty-inbound notice at the chokepoint (sends nothing)", async () => {
+    const { client, raw } = makeFakeClient();
+
+    const result = await sendText({
+      client,
+      to: "group:1",
+      text: "I didn't receive any text in your message. Please resend or add a caption.",
+    });
+
+    expect(raw.sendGroupMessage).not.toHaveBeenCalled();
+    expect(result.messageIds).toEqual([]);
+  });
+
+  it("suppresses the notice even when a prefix wraps it", async () => {
+    const { client, raw } = makeFakeClient();
+
+    await sendText({ client, to: "group:1", text: "【提示】I didn't receive any text in your message. blah" });
+
+    expect(raw.sendGroupMessage).not.toHaveBeenCalled();
   });
 
   it("debug-logs the raw params of the file-upload fallback", async () => {

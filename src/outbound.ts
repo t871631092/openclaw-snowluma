@@ -97,6 +97,16 @@ export function chunkText(text: string, limit: number): string[] {
   let start = 0;
 
   while (start < len) {
+    // When everything that remains already fits within `limit`, emit it as a
+    // single final chunk. The newline preference below is only meant to pick a
+    // break point for a *forced* split (text longer than `limit`); without this
+    // guard a mid-text newline makes it break anyway, so a short multi-line
+    // message that fits comfortably gets scattered across several QQ sends.
+    if (len - start <= limit) {
+      chunks.push(text.slice(start));
+      break;
+    }
+
     const hardCap = Math.min(start + limit, len);
     let newlineSplit = -1;
     let lastSafe = -1;
@@ -128,6 +138,24 @@ export function chunkText(text: string, limit: number): string[] {
 }
 
 const DEFAULT_CHUNK_LIMIT = 4500; // matches config.ts's default `textChunkLimit`
+
+/**
+ * Stable phrase from OpenClaw's runtime "empty inbound" notice
+ * ("I didn't receive any text in your message. Please resend or add a caption.").
+ * The runtime emits it (not the agent) for turns it deems empty. We never want it
+ * posted to QQ, so `sendText` drops any outbound text containing it — this is the
+ * universal chokepoint every outbound path (gateway reply dispatch AND the
+ * host-initiated channel adapter) funnels through, so blocking it here catches it
+ * no matter which layer produced it. Matched as a substring to survive a response
+ * prefix or trailing wording tweaks. See also the higher-level guards in
+ * dispatch.ts (skip / deliver-drop) and channel.ts.
+ */
+export const OPENCLAW_EMPTY_INPUT_NOTICE = "I didn't receive any text in your message";
+
+/** True when `text` is (or contains) OpenClaw's canned empty-inbound notice. */
+export function isOpenClawEmptyInputNotice(text: string | undefined | null): boolean {
+  return typeof text === "string" && text.includes(OPENCLAW_EMPTY_INPUT_NOTICE);
+}
 
 // ── Debug logging ──────────────────────────────────────────────────────────
 //
@@ -192,6 +220,14 @@ export async function sendText(params: {
 }): Promise<{ messageIds: string[] }> {
   const { client, to, text: body, replyToId, chunkLimit = DEFAULT_CHUNK_LIMIT, debug } = params;
   const target = parseTarget(to);
+
+  // Universal chokepoint: never send OpenClaw's canned empty-inbound notice to QQ,
+  // whichever upstream path produced this reply. Returns as if nothing was queued.
+  if (isOpenClawEmptyInputNotice(body)) {
+    debug?.log(`[snowluma:outbound] suppressed empty-inbound notice to ${formatTarget(target)}`);
+    return { messageIds: [] };
+  }
+
   const chunks = chunkText(body, chunkLimit);
 
   const messageIds: string[] = [];

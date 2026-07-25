@@ -447,6 +447,17 @@ describe("dispatchBatch — digest", () => {
     expect(send.sendText.mock.calls[0]![0]).toMatchObject({ text: "本群讨论了周会安排。" });
   });
 
+  it("passes no sender attribution to the envelope, so the prompt is not prefixed with a username", async () => {
+    const { runtime, state } = createMockRuntime();
+    const batch = makeBatch({ kind: "digest", trigger: undefined });
+
+    await dispatchBatch(batch, { account: makeAccount(), cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send: makeSend() });
+
+    expect(state.lastEnvelopeArgs.from).toBe("");
+    expect(state.lastEnvelopeArgs.sender).toBeUndefined();
+    expect(state.lastEnvelopeArgs.senderLabel).toBeUndefined();
+  });
+
   it("does not resolve quote context for a digest batch", async () => {
     const { runtime } = createMockRuntime();
     const resolveQuote = vi.fn(async () => null);

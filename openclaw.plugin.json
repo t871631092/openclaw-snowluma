@@ -2,7 +2,7 @@
   "id": "openclaw-snowluma",
   "name": "SnowLuma",
   "description": "OpenClaw channel plugin connecting QQ via the SnowLuma SDK. Speaks to SnowLuma exclusively through @snowluma/sdk (WebSocket + action client); never reimplements the OneBot protocol on the wire.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "channels": ["snowluma"],
   "channelEnvVars": {
     "snowluma": [

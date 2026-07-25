@@ -23,7 +23,7 @@ import type { SnowLumaApiClient } from "@snowluma/sdk";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import type { AggregatedBatch } from "./aggregator.js";
-import { sendMedia as defaultSendMedia, sendText as defaultSendText } from "./outbound.js";
+import { OPENCLAW_EMPTY_INPUT_NOTICE, sendMedia as defaultSendMedia, sendText as defaultSendText } from "./outbound.js";
 import { formatQuoteContext, resolveQuoteContext as defaultResolveQuoteContext } from "./quote.js";
 import type { QuoteDeps } from "./quote.js";
 import { getSnowLumaRuntime } from "./runtime.js";
@@ -101,18 +101,6 @@ function renderTranscriptLine(msg: NormalizedMessage): string {
 
 const HISTORY_HEADER = "【历史聊天记录（仅供参考上下文，请勿直接回复其中的旧消息）】";
 const HISTORY_FOOTER = "【以上为历史消息；请针对下面这条最新消息进行回复】";
-
-/**
- * Stable phrase from OpenClaw's runtime "empty inbound" notice
- * ("I didn't receive any text in your message. Please resend or add a caption.").
- * The runtime returns it whenever a turn reaches the agent with no usable text or
- * media — and it decides that AFTER its own @bot-mention stripping, so an inbound
- * we composed as non-empty (e.g. a bare `@bot`, a sticker, a reply-with-no-text)
- * can still come back as this notice. We never want that English string posted to
- * QQ, so `deliver` drops any reply containing it. Matched as a substring to stay
- * robust to a response prefix or trailing wording tweaks.
- */
-const OPENCLAW_EMPTY_INPUT_NOTICE = "I didn't receive any text in your message";
 
 /**
  * Render the peer's accumulated reply-history buffer into a transcript block,
@@ -267,13 +255,21 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
     }
 
     const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
+    // In a group the host prefixes the body with "name (id): " and puts `from`
+    // in the envelope header — correct for a realtime turn, wrong for a digest:
+    // the digest body is our own summarisation prompt, not something the last
+    // speaker said, and attributing it to them makes the agent read the
+    // instruction as that user's message. Digest turns therefore carry no
+    // sender attribution at all.
+    const isDigest = batch.kind === "digest";
     const envelopeBody = runtime.channel.reply.formatInboundEnvelope({
       channel: "SnowLuma",
-      from: last.senderName,
+      // `from` is required by the host's signature, so pass "" — it is
+      // normalized away and the header part is dropped entirely.
+      ...(isDigest ? { from: "" } : { from: last.senderName, sender: { id: String(last.senderId), name: last.senderName } }),
       timestamp: last.time * 1000,
       body: composed.body,
       chatType: batch.peerKind,
-      sender: { id: String(last.senderId), name: last.senderName },
       envelope: envelopeOptions,
     });
 
