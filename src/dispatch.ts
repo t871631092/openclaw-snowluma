@@ -141,12 +141,16 @@ function buildRealtimeBody(
   return { body, rawBody: text, commandBody: text, imageUrls };
 }
 
-function buildDigestBody(
+/**
+ * Body shared by the two summarisation paths — the periodic digest and the
+ * on-demand `/summary` command. Both are a synthetic prompt over a rendered
+ * transcript; only the prompt and the character budget differ.
+ */
+function buildTranscriptBody(
   batch: AggregatedBatch,
-  account: ResolvedSnowLumaAccount,
+  prompt: string,
+  maxTranscriptChars: number,
 ): { body: string; rawBody: string; commandBody: string; imageUrls: string[] } {
-  const { prompt, maxTranscriptChars } = account.receive.digest;
-
   const lines = batch.messages.map(renderTranscriptLine);
   // The aggregator already trims its buffer against `maxTranscriptChars`, but
   // that budget is measured on raw message text — the rendered
@@ -161,9 +165,10 @@ function buildDigestBody(
   }
 
   const body = `${prompt}\n\n${transcript}`;
-  // A digest is a synthetic summarisation prompt, not user input — giving it
-  // an empty CommandBody/RawBody means there is no text for the command
-  // parser to even look at, on top of CommandAuthorized always being false.
+  // A summarisation turn is a synthetic prompt, not user input — giving it an
+  // empty CommandBody/RawBody means there is no text for the command parser to
+  // even look at, on top of CommandAuthorized always being false. (The
+  // transcript itself may well contain a line that reads like "/reset".)
   return { body, rawBody: "", commandBody: "", imageUrls: [] };
 }
 
@@ -173,9 +178,15 @@ export function buildBatchBody(
   account: ResolvedSnowLumaAccount,
   quoteText: string,
 ): { body: string; rawBody: string; commandBody: string; imageUrls: string[] } {
-  return batch.kind === "digest"
-    ? buildDigestBody(batch, account)
-    : buildRealtimeBody(batch, account, quoteText);
+  if (batch.kind === "digest") {
+    const { prompt, maxTranscriptChars } = account.receive.digest;
+    return buildTranscriptBody(batch, prompt, maxTranscriptChars);
+  }
+  if (batch.kind === "summary") {
+    const { prompt, maxTranscriptChars } = account.receive.summary;
+    return buildTranscriptBody(batch, prompt, maxTranscriptChars);
+  }
+  return buildRealtimeBody(batch, account, quoteText);
 }
 
 /** The last message (scanning backward) that carries a quote or a forward — realtime only. */
@@ -213,6 +224,9 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
     const first = batch.messages[0]!;
     const last = batch.messages[batch.messages.length - 1]!;
+    // Who the turn is attributed to. For a `/summary` batch that is the member
+    // who typed the command — the transcript's own last speaker is incidental.
+    const origin = batch.commandMessage ?? last;
     const address = `snowluma:${batch.peerId}`;
 
     runtime.channel.activity.record({ channel: "snowluma", accountId: account.accountId, direction: "inbound" });
@@ -256,31 +270,34 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
     const envelopeOptions = runtime.channel.reply.resolveEnvelopeFormatOptions(cfg);
     // In a group the host prefixes the body with "name (id): " and puts `from`
-    // in the envelope header — correct for a realtime turn, wrong for a digest:
-    // the digest body is our own summarisation prompt, not something the last
-    // speaker said, and attributing it to them makes the agent read the
-    // instruction as that user's message. Digest turns therefore carry no
-    // sender attribution at all.
-    const isDigest = batch.kind === "digest";
+    // in the envelope header — correct for a realtime turn, wrong for a
+    // summarisation one: a digest/summary body is our own prompt, not something
+    // the last speaker said, and attributing it to them makes the agent read the
+    // instruction as that user's message. Those turns therefore carry no sender
+    // attribution at all.
+    const isSummarisation = batch.kind !== "realtime";
     const envelopeBody = runtime.channel.reply.formatInboundEnvelope({
       channel: "SnowLuma",
       // `from` is required by the host's signature, so pass "" — it is
       // normalized away and the header part is dropped entirely.
-      ...(isDigest ? { from: "" } : { from: last.senderName, sender: { id: String(last.senderId), name: last.senderName } }),
-      timestamp: last.time * 1000,
+      ...(isSummarisation
+        ? { from: "" }
+        : { from: last.senderName, sender: { id: String(last.senderId), name: last.senderName } }),
+      timestamp: origin.time * 1000,
       body: composed.body,
       chatType: batch.peerKind,
       envelope: envelopeOptions,
     });
 
-    // A digest turn summarises a chat window, not a command from a specific
-    // user — it must never be able to run a privileged text command, so
+    // A summarisation turn feeds the agent a chat window, not a command from a
+    // specific user — it must never be able to run a privileged text command, so
     // CommandAuthorized is hard-wired false and CommandSource is omitted
-    // entirely (rather than merely false) for that path.
-    const commandAuthorized =
-      batch.kind === "digest"
-        ? false
-        : resolveInboundCommandAuthorization({ runtime, cfg, allowFrom: account.allowFrom, peerId: batch.peerId });
+    // entirely (rather than merely false) for those paths. `/summary` is no
+    // exception: the user authorized a summary, not whatever the transcript
+    // happens to contain.
+    const commandAuthorized = isSummarisation
+      ? false
+      : resolveInboundCommandAuthorization({ runtime, cfg, allowFrom: account.allowFrom, peerId: batch.peerId });
 
     const mediaFields: Record<string, unknown> =
       composed.imageUrls.length > 0
@@ -307,12 +324,12 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
       SessionKey: route.sessionKey,
       AccountId: route.accountId,
       ChatType: batch.peerKind,
-      SenderId: String(last.senderId),
-      SenderName: last.senderName,
+      SenderId: String(origin.senderId),
+      SenderName: origin.senderName,
       Provider: "snowluma",
       Surface: "snowluma",
-      MessageSid: String(last.messageId),
-      Timestamp: last.time * 1000,
+      MessageSid: String(origin.messageId),
+      Timestamp: origin.time * 1000,
       CommandAuthorized: commandAuthorized,
       ...(batch.kind === "realtime" ? { CommandSource: "text" as const } : {}),
       OriginatingChannel: "snowluma",
@@ -369,8 +386,14 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
           const replyText = payload.text ?? "";
           if (replyText.trim()) {
             try {
-              const replyToId =
-                batch.kind === "realtime" && account.replyToTrigger ? first.messageId : undefined;
+              // A digest has nothing to quote-reply to; a realtime turn quotes
+              // the message that opened the window, and a `/summary` turn
+              // quotes the command itself.
+              const replyToId = account.replyToTrigger
+                ? batch.kind === "realtime"
+                  ? first.messageId
+                  : batch.commandMessage?.messageId
+                : undefined;
               await send.sendText({
                 client,
                 to: address,

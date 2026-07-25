@@ -20,6 +20,7 @@ import { dispatchBatch } from "./dispatch.js";
 import type { DispatchDeps, DispatchLogger } from "./dispatch.js";
 import { reactToMessage, sendMedia as defaultSendMedia, sendText as defaultSendText } from "./outbound.js";
 import { normalizeMessageEvent } from "./segments.js";
+import { matchSummaryCommand, runSummaryCommand } from "./summary.js";
 import { evaluateTrigger } from "./triggers.js";
 import type { ResolvedSnowLumaAccount } from "./types.js";
 
@@ -158,17 +159,39 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
   const selfMessageTracker = createSelfMessageTracker();
   const trackingSend = createTrackingSend(selfMessageTracker);
 
+  // Shared by the aggregator's flushes and the `/summary` command, so both
+  // reach the agent through exactly the same dispatch deps.
+  const runDispatch = async (batch: AggregatedBatch): Promise<void> => {
+    try {
+      await dispatch(batch, { account: effectiveAccount, cfg, client, log, send: trackingSend });
+    } catch (err) {
+      log?.error?.(`[snowluma:${account.accountId}] dispatch failed: ${String(err)}`);
+    }
+  };
+
   const aggregator = createAggregator({
     account: effectiveAccount,
     log,
-    onFlush: async (batch) => {
-      try {
-        await dispatch(batch, { account: effectiveAccount, cfg, client, log, send: trackingSend });
-      } catch (err) {
-        log?.error?.(`[snowluma:${account.accountId}] dispatch failed: ${String(err)}`);
-      }
-    },
+    onFlush: runDispatch,
   });
+
+  /** Fire-and-forget emoji ack on a message that woke the agent. Never throws. */
+  const maybeAutoReact = (messageId: number, peerId: string): void => {
+    void reactToMessage(client, messageId, account.groupAutoReactEmojiId)
+      .then((result) => {
+        if (!result.ok) {
+          log?.error?.(
+            `[snowluma:${account.accountId}] group auto-react failed for ${peerId}#${messageId}: ${
+              result.error ?? "unknown error"
+            }`,
+          );
+        }
+      })
+      // `reactToMessage` is contracted never to throw, but a caller-supplied
+      // `log.error` that throws would otherwise surface as an unhandled
+      // rejection — keep the fire-and-forget path fully self-contained.
+      .catch(() => {});
+  };
 
   const unsubscribeMessages = client.onMessage((event: OneBotMessageEvent) => {
     try {
@@ -186,25 +209,31 @@ export async function startGateway(ctx: GatewayContext): Promise<void> {
       if (selfId !== undefined && msg.senderId === selfId) return;
       if (!isPeerAllowed(account, msg.peerId)) return;
 
+      // `/summary` short-circuits the whole normal pipeline: it fetches its own
+      // transcript from SnowLuma, and the command line itself is an instruction
+      // to the bot — it must not open a realtime window, land in a digest, or be
+      // remembered as reply history.
+      const summaryRequest = matchSummaryCommand(msg, effectiveAccount);
+      if (summaryRequest) {
+        if (msg.peerKind === "group" && account.groupAutoReact) {
+          maybeAutoReact(msg.messageId, msg.peerId);
+        }
+        void runSummaryCommand(msg, summaryRequest, {
+          account: effectiveAccount,
+          client,
+          log,
+          dispatch: runDispatch,
+          send: trackingSend,
+        });
+        return;
+      }
+
       const decision = evaluateTrigger(msg, effectiveAccount, {
         isSelfMessageId: (id) => selfMessageTracker.has(id),
       });
 
       if (decision.triggered && msg.peerKind === "group" && account.groupAutoReact) {
-        void reactToMessage(client, msg.messageId, account.groupAutoReactEmojiId)
-          .then((result) => {
-            if (!result.ok) {
-              log?.error?.(
-                `[snowluma:${account.accountId}] group auto-react failed for ${msg.peerId}#${msg.messageId}: ${
-                  result.error ?? "unknown error"
-                }`,
-              );
-            }
-          })
-          // `reactToMessage` is contracted never to throw, but a caller-supplied
-          // `log.error` that throws would otherwise surface as an unhandled
-          // rejection — keep the fire-and-forget path fully self-contained.
-          .catch(() => {});
+        maybeAutoReact(msg.messageId, msg.peerId);
       }
 
       aggregator.accept(msg, decision);

@@ -19,13 +19,15 @@ function makeAccount(
   overrides: Partial<Omit<ResolvedSnowLumaAccount, "receive">> & {
     mention?: Partial<ResolvedReceiveConfig["mention"]>;
     digest?: Partial<ResolvedReceiveConfig["digest"]>;
+    summary?: Partial<ResolvedReceiveConfig["summary"]>;
     realtime?: Partial<ResolvedReceiveConfig["realtime"]>;
   } = {},
 ): ResolvedSnowLumaAccount {
-  const { mention, digest, realtime, ...rest } = overrides;
+  const { mention, digest, summary, realtime, ...rest } = overrides;
   const receive = cloneReceive();
   if (mention) Object.assign(receive.mention, mention);
   if (digest) Object.assign(receive.digest, digest);
+  if (summary) Object.assign(receive.summary, summary);
   if (realtime) Object.assign(receive.realtime, realtime);
 
   return {
@@ -88,6 +90,19 @@ interface FakeClient {
   setMsgEmojiLike: ReturnType<typeof vi.fn>;
   sendGroupMessage: ReturnType<typeof vi.fn>;
   sendPrivateMessage: ReturnType<typeof vi.fn>;
+  getGroupMessageHistory: ReturnType<typeof vi.fn>;
+  getFriendMessageHistory: ReturnType<typeof vi.fn>;
+}
+
+/** One raw history row, as `get_group_msg_history` returns it. */
+function historyEntry(i: number) {
+  return {
+    message_id: i,
+    time: 1_700_000_000 + i,
+    sender: { user_id: 10000 + i, nickname: `用户${i}` },
+    message: [{ type: "text", data: { text: `消息 ${i}` } }],
+    raw_message: `消息 ${i}`,
+  };
 }
 
 function makeFakeClient(
@@ -122,7 +137,21 @@ function makeFakeClient(
   const sendGroupMessage = vi.fn(async () => ({ message_id: nextMessageId++ }));
   const sendPrivateMessage = vi.fn(async () => ({ message_id: nextMessageId++ }));
 
-  const fake = { connect, close, on, onMessage, getLoginInfo, setMsgEmojiLike, sendGroupMessage, sendPrivateMessage };
+  const getGroupMessageHistory = vi.fn(async () => ({ messages: [historyEntry(1), historyEntry(2)] }));
+  const getFriendMessageHistory = vi.fn(async () => ({ messages: [historyEntry(3)] }));
+
+  const fake = {
+    connect,
+    close,
+    on,
+    onMessage,
+    getLoginInfo,
+    setMsgEmojiLike,
+    sendGroupMessage,
+    sendPrivateMessage,
+    getGroupMessageHistory,
+    getFriendMessageHistory,
+  };
 
   return {
     client: fake as unknown as SnowLumaWebSocketClient,
@@ -134,6 +163,8 @@ function makeFakeClient(
     setMsgEmojiLike,
     sendGroupMessage,
     sendPrivateMessage,
+    getGroupMessageHistory,
+    getFriendMessageHistory,
   };
 }
 
@@ -523,6 +554,132 @@ describe("startGateway — message routing", () => {
 
     expect(call).toBe(2);
     expect(errors.some((m) => m.includes("dispatch failed"))).toBe(true);
+  });
+});
+
+// ── startGateway — /summary command ───────────────────────────────────────
+
+describe("startGateway — /summary command", () => {
+  it("fetches recent history and dispatches a summary batch, bypassing the aggregator", async () => {
+    vi.useFakeTimers();
+    const { client, emit, getGroupMessageHistory } = makeFakeClient();
+    // digest on + realtime on: neither may see the command message.
+    const account = makeAccount({
+      selfId: 999,
+      digest: { enabled: true, intervalMs: 30, minMessages: 1, scope: "group" },
+      realtime: { windowMs: 20 },
+      summary: { count: 10 },
+    });
+    const controller = new AbortController();
+    const { fn: dispatch, calls } = makeDispatchSpy();
+
+    const done = startGateway({ account, cfg, abortSignal: controller.signal, clientFactory: () => client, dispatch });
+    await flushMicrotasks();
+
+    emit(makeGroupEvent({ message: [{ type: "text", data: { text: "/summary" }}], raw_message: "/summary" }));
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(80);
+
+    controller.abort();
+    await done;
+
+    expect(getGroupMessageHistory).toHaveBeenCalledWith({ group_id: 888, count: 11 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.batch.kind).toBe("summary");
+    expect(calls[0]!.batch.reason).toBe("command");
+    expect(calls[0]!.batch.commandMessage?.messageId).toBe(500);
+    expect(calls[0]!.batch.messages.map((m) => m.messageId)).toEqual([1, 2]);
+  });
+
+  it("works in a direct chat without also producing a realtime reply", async () => {
+    const { client, emit, getFriendMessageHistory } = makeFakeClient();
+    const account = makeAccount({ selfId: 999, realtime: { enabled: false } });
+    const controller = new AbortController();
+    const { fn: dispatch, calls } = makeDispatchSpy();
+
+    const done = startGateway({ account, cfg, abortSignal: controller.signal, clientFactory: () => client, dispatch });
+    await flushMicrotasks();
+
+    emit(makePrivateEvent({ message: [{ type: "text", data: { text: "/总结 5" } }], raw_message: "/总结 5" }));
+    await flushMicrotasks();
+
+    controller.abort();
+    await done;
+
+    expect(getFriendMessageHistory).toHaveBeenCalledWith({ user_id: 20002, count: 6 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.batch.kind).toBe("summary");
+  });
+
+  it("falls through to the normal pipeline when the command is disabled", async () => {
+    const { client, emit, getFriendMessageHistory } = makeFakeClient();
+    const account = makeAccount({
+      selfId: 999,
+      realtime: { enabled: false },
+      summary: { enabled: false },
+    });
+    const controller = new AbortController();
+    const { fn: dispatch, calls } = makeDispatchSpy();
+
+    const done = startGateway({ account, cfg, abortSignal: controller.signal, clientFactory: () => client, dispatch });
+    await flushMicrotasks();
+
+    emit(makePrivateEvent({ message: [{ type: "text", data: { text: "/summary" } }], raw_message: "/summary" }));
+    await flushMicrotasks();
+
+    controller.abort();
+    await done;
+
+    expect(getFriendMessageHistory).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.batch.kind).toBe("realtime");
+  });
+
+  it("acks the command with groupAutoReact when enabled", async () => {
+    const { client, emit, setMsgEmojiLike } = makeFakeClient();
+    const account = makeAccount({ selfId: 999, groupAutoReact: true, groupAutoReactEmojiId: 66 });
+    const controller = new AbortController();
+    const { fn: dispatch } = makeDispatchSpy();
+
+    const done = startGateway({ account, cfg, abortSignal: controller.signal, clientFactory: () => client, dispatch });
+    await flushMicrotasks();
+
+    emit(makeGroupEvent({ message: [{ type: "text", data: { text: "/summary" } }], raw_message: "/summary" }));
+    await flushMicrotasks();
+
+    controller.abort();
+    await done;
+
+    expect(setMsgEmojiLike).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells the chat when the history call fails, and dispatches nothing", async () => {
+    const { client, emit, getGroupMessageHistory, sendGroupMessage } = makeFakeClient();
+    getGroupMessageHistory.mockRejectedValueOnce(new Error("history boom"));
+    const account = makeAccount({ selfId: 999 });
+    const controller = new AbortController();
+    const { fn: dispatch, calls } = makeDispatchSpy();
+    const errors: string[] = [];
+
+    const done = startGateway({
+      account,
+      cfg,
+      abortSignal: controller.signal,
+      clientFactory: () => client,
+      dispatch,
+      log: { error: (m) => errors.push(m) },
+    });
+    await flushMicrotasks();
+
+    emit(makeGroupEvent({ message: [{ type: "text", data: { text: "/summary" } }], raw_message: "/summary" }));
+    await flushMicrotasks();
+
+    controller.abort();
+    await done;
+
+    expect(calls).toHaveLength(0);
+    expect(sendGroupMessage).toHaveBeenCalledTimes(1);
+    expect(errors.some((m) => m.includes("history boom"))).toBe(true);
   });
 });
 

@@ -26,12 +26,12 @@
 | `denyFrom` | `string[]` | `undefined` | 来源黑名单，在 `allowFrom` 判定**之后**生效，始终优先——即使某个 peer 同时命中 `allowFrom` 和 `denyFrom`，结果也是拒绝。 |
 | `groupAutoReact` | `boolean` | `false` | 是否对触发了 Agent 的入站群消息自动加表情回应（`groupAutoReact === true` 才算启用，其余任何值都是 `false`）。 |
 | `groupAutoReactEmojiId` | `number \| string` | `1` | `groupAutoReact` 使用的 QQ 表情 id。 |
-| `replyToTrigger` | `boolean` | `true` | 回复是否以 QQ 引用（quote-reply）触发消息的形式发送；仅对 realtime 批次生效（digest 批次没有单条"触发消息"可引用）。 |
+| `replyToTrigger` | `boolean` | `true` | 回复是否以 QQ 引用（quote-reply）触发消息的形式发送；对 realtime 批次引用开窗那条消息，对 `/summary` 批次引用命令那条消息（digest 批次没有单条"触发消息"可引用）。 |
 | `textChunkLimit` | `number` | `4500` | 出站文本按此字符数分块发送（正整数，非法值回退默认值）。 |
 | `requestTimeoutMs` | `number` | `30000` | SnowLuma action 调用超时（毫秒）。 |
 | `debug` | `boolean` | `false` | 调试模式：把每条出站消息的原始载荷（目标 + 渲染出的 OneBot 段）打进日志。网关回复路径经 `log.info` 输出，主机直发路径（`channel.ts`）经 `console.info` 输出。仅 `true` 才算启用。 |
 | `reconnect` | `object` | 见下表 | WebSocket 重连调优，直接传给 `@snowluma/sdk` 的 `SnowLumaWebSocketClientOptions.reconnect`。 |
-| `receive` | `object` | 见下方各表 | 接收模式的配置（`mention` / `digest` / `realtime` / `history`）。 |
+| `receive` | `object` | 见下方各表 | 接收模式的配置（`mention` / `digest` / `summary` / `realtime` / `history`）。 |
 | `quote` | `object` | 见下表 | 引用/合并转发主动解析配置。 |
 | `tools` | `object` | 见下表 | Agent 工具注册开关。 |
 | `accounts` | `object` | — | 额外命名账号，仅在 `default` 账号（顶层 `channels.snowluma`）下有意义，见[多账号](#多账号)。 |
@@ -68,6 +68,25 @@
 > 以下是这段时间的群聊记录。请用简洁的中文归纳讨论的主题、结论和待办事项；如果没有值得汇报的内容，只回复 SKIP。
 
 `minMessages` 的抑制-重试语义、SKIP 静默、命令注入防护，详见[三种接收模式 · digest](/guide/receive-modes#digest-定时或达到消息数后自动归纳)。
+
+## `receive.summary` —— `/summary` 主动总结命令 {#receive-summary-summary-主动总结命令}
+
+| Key | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `enabled` | `boolean` | `true` | 是否启用 `/summary` 命令（**默认开启**）。关掉后命令词会退回普通消息，照常走 `mention`/`realtime` 流程。 |
+| `commands` | `string[]` | `["/summary", "/总结"]` | 触发命令词，匹配消息去掉前导 `@机器人` 后的开头。大小写不敏感；**传入空数组会回退到默认值**（否则就没有任何词能触发了）。 |
+| `count` | `number` | `100` | 命令没带数字时，拉取并总结最近多少条消息。会被 `maxCount` 夹住。 |
+| `maxCount` | `number` | `200` | 用户通过 `/summary <n>` 能请求的条数上限。 |
+| `prompt` | `string` | 见下方 | 拼在聊天记录前的指令文字。传入空字符串或纯空白会回退到默认值。 |
+| `scope` | `"group" \| "direct" \| "all"` | `"all"` | 哪些聊天类型可以使用该命令。传入其他值回退为 `"all"`。 |
+| `peers` | `string[]` | `[]` | 只有这些 peer 可以使用（如 `"group:123"`）；为空表示 `scope` 范围内全部可用。 |
+| `maxTranscriptChars` | `number` | `20000` | 交给 Agent 的聊天记录字符数硬上限。 |
+
+默认 `prompt`（`DEFAULT_SUMMARY_PROMPT`，逐字取自 `src/config.ts`）：
+
+> 以下是这个会话最近的聊天记录。请用简洁的中文总结其中讨论的主题、结论和待办事项，必要时按话题分点列出。这是用户主动请求的总结，请直接给出总结内容，不要回复 SKIP。
+
+与 `digest` 的区别、消息从哪里来、失败时会回什么，详见[接收模式 · summary](/guide/receive-modes#summary-summary-主动总结命令)。
 
 ## `receive.realtime` —— 亚秒级消息聚合
 

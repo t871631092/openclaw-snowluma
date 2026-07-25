@@ -10,7 +10,12 @@
 
 import type { NormalizedMessage, PeerKind, ResolvedSnowLumaAccount, TriggerDecision } from "./types.js";
 
-export type FlushKind = "realtime" | "digest";
+/**
+ * `"summary"` batches never come out of this module — they are built on demand
+ * by `summary.ts` when a user types `/summary` — but they travel the same
+ * `AggregatedBatch` → `dispatch.ts` path, so the kind lives here with the others.
+ */
+export type FlushKind = "realtime" | "digest" | "summary";
 
 export interface AggregatedBatch {
   kind: FlushKind;
@@ -25,6 +30,12 @@ export interface AggregatedBatch {
    * Empty/undefined when history is disabled or nothing preceded the batch.
    */
   history?: NormalizedMessage[];
+  /**
+   * The message that explicitly asked for this batch (`"summary"` only). It is
+   * deliberately NOT part of `messages` — it is the command, not transcript
+   * content — but dispatch attributes the turn to it and quote-replies to it.
+   */
+  commandMessage?: NormalizedMessage;
   trigger?: TriggerDecision;
   /** Why this batch flushed: "quiet" | "max-window" | "max-messages" | "max-chars" | "interval" | "immediate" | "shutdown" (or a caller-supplied reason passed to `flushAll`). */
   reason: string;

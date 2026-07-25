@@ -2,7 +2,7 @@
   "id": "openclaw-snowluma",
   "name": "SnowLuma",
   "description": "OpenClaw channel plugin connecting QQ via the SnowLuma SDK. Speaks to SnowLuma exclusively through @snowluma/sdk (WebSocket + action client); never reimplements the OneBot protocol on the wire.",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "channels": ["snowluma"],
   "channelEnvVars": {
     "snowluma": [
@@ -21,7 +21,7 @@
   "channelConfigs": {
     "snowluma": {
       "label": "SnowLuma",
-      "description": "QQ messaging via the SnowLuma SDK — mention/keyword, digest, and realtime receive modes, plus active quote/forward-message resolution.",
+      "description": "QQ messaging via the SnowLuma SDK — mention/keyword, digest, on-demand /summary, and realtime receive modes, plus active quote/forward-message resolution.",
       "schema": {
         "type": "object",
         "additionalProperties": false,
@@ -230,6 +230,62 @@
                   }
                 }
               },
+              "summary": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "On-demand /summary command: a chat member asks for a summary and the bot fetches that peer's most recent messages straight from SnowLuma (get_group_msg_history / get_friend_msg_history) and summarises them. Independent of digest mode.",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable the /summary command. Default: true."
+                  },
+                  "commands": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": ["/summary", "/总结"],
+                    "description": "Command words that trigger it, matched on the message's leading token. Empty falls back to the built-ins. Default: [\"/summary\", \"/总结\"]."
+                  },
+                  "count": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "default": 100,
+                    "description": "How many recent messages to fetch when the command carries no count. Default: 100."
+                  },
+                  "maxCount": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "default": 200,
+                    "description": "Ceiling on the count a user may request via /summary <n>. Default: 200."
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Instruction prepended to the transcript when dispatching. Default: the plugin's built-in Chinese summary prompt (which, unlike the digest prompt, never offers a SKIP escape hatch)."
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": ["group", "direct", "all"],
+                    "default": "all",
+                    "description": "Which chats accept the command. Default: all."
+                  },
+                  "peers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": [],
+                    "description": "Only accept the command in these peers (e.g. group:123). Empty/omitted means all peers in scope."
+                  },
+                  "maxTranscriptChars": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "default": 20000,
+                    "description": "Hard cap on transcript characters handed to the agent. Default: 20000."
+                  }
+                }
+              },
               "realtime": {
                 "type": "object",
                 "additionalProperties": false,
@@ -297,7 +353,7 @@
                 }
               }
             },
-            "description": "Receive modes (mention/keyword, digest, realtime coalescing) plus the reply-history buffer."
+            "description": "Receive modes (mention/keyword, digest, on-demand /summary, realtime coalescing) plus the reply-history buffer."
           },
           "quote": {
             "type": "object",
@@ -554,6 +610,62 @@
                           },
                           "default": [],
                           "description": "Only observe these peers (e.g. group:123). Empty/omitted means all peers in scope."
+                        },
+                        "maxTranscriptChars": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "default": 20000,
+                          "description": "Hard cap on transcript characters handed to the agent. Default: 20000."
+                        }
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "On-demand /summary command: a chat member asks for a summary and the bot fetches that peer's most recent messages straight from SnowLuma (get_group_msg_history / get_friend_msg_history) and summarises them. Independent of digest mode.",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "default": true,
+                          "description": "Enable the /summary command. Default: true."
+                        },
+                        "commands": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": ["/summary", "/总结"],
+                          "description": "Command words that trigger it, matched on the message's leading token. Empty falls back to the built-ins. Default: [\"/summary\", \"/总结\"]."
+                        },
+                        "count": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "default": 100,
+                          "description": "How many recent messages to fetch when the command carries no count. Default: 100."
+                        },
+                        "maxCount": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "default": 200,
+                          "description": "Ceiling on the count a user may request via /summary <n>. Default: 200."
+                        },
+                        "prompt": {
+                          "type": "string",
+                          "description": "Instruction prepended to the transcript when dispatching. Default: the plugin's built-in Chinese summary prompt (which, unlike the digest prompt, never offers a SKIP escape hatch)."
+                        },
+                        "scope": {
+                          "type": "string",
+                          "enum": ["group", "direct", "all"],
+                          "default": "all",
+                          "description": "Which chats accept the command. Default: all."
+                        },
+                        "peers": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "default": [],
+                          "description": "Only accept the command in these peers (e.g. group:123). Empty/omitted means all peers in scope."
                         },
                         "maxTranscriptChars": {
                           "type": "integer",

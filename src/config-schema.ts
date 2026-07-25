@@ -75,6 +75,25 @@ const digestSchema: JsonSchemaLiteral = {
   },
 };
 
+const summarySchema: JsonSchemaLiteral = {
+  type: "object",
+  properties: {
+    enabled: { type: "boolean", default: true, description: "启用 /summary 主动总结命令" },
+    commands: { ...stringArray, description: '触发命令词，默认 ["/summary", "/总结"]；留空则使用默认值' },
+    count: { type: "number", default: 100, description: "命令未带数字时总结最近多少条消息" },
+    maxCount: { type: "number", default: 200, description: "用户通过 /summary <n> 可请求的条数上限" },
+    prompt: { type: "string", description: "下发总结时附加的提示词" },
+    scope: {
+      type: "string",
+      enum: ["group", "direct", "all"],
+      default: "all",
+      description: "允许使用该命令的会话范围",
+    },
+    peers: { ...stringArray, description: '仅这些会话可用（如 "group:123"），留空表示范围内全部可用' },
+    maxTranscriptChars: { type: "number", default: 20000, description: "下发给 agent 的转录文本字符上限" },
+  },
+};
+
 const realtimeSchema: JsonSchemaLiteral = {
   type: "object",
   properties: {
@@ -101,6 +120,7 @@ const receiveSchema: JsonSchemaLiteral = {
   properties: {
     mention: mentionSchema,
     digest: digestSchema,
+    summary: summarySchema,
     realtime: realtimeSchema,
     history: historySchema,
   },

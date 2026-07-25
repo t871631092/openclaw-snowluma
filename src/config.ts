@@ -19,6 +19,17 @@ export const DEFAULT_DIGEST_PROMPT =
   "以下是这段时间的群聊记录。请用简洁的中文归纳讨论的主题、结论和待办事项；" +
   "如果没有值得汇报的内容，只回复 SKIP。";
 
+/**
+ * Unlike {@link DEFAULT_DIGEST_PROMPT} this one must never offer a SKIP escape
+ * hatch: a summary is something a user explicitly asked for, so an empty reply
+ * would read as the bot ignoring the command.
+ */
+export const DEFAULT_SUMMARY_PROMPT =
+  "以下是这个会话最近的聊天记录。请用简洁的中文总结其中讨论的主题、结论和待办事项，" +
+  "必要时按话题分点列出。这是用户主动请求的总结，请直接给出总结内容，不要回复 SKIP。";
+
+export const DEFAULT_SUMMARY_COMMANDS = ["/summary", "/总结"];
+
 export const RECEIVE_DEFAULTS: ResolvedReceiveConfig = {
   mention: {
     enabled: true,
@@ -36,6 +47,16 @@ export const RECEIVE_DEFAULTS: ResolvedReceiveConfig = {
     minMessages: 3,
     prompt: DEFAULT_DIGEST_PROMPT,
     scope: "group",
+    peers: [],
+    maxTranscriptChars: 20_000,
+  },
+  summary: {
+    enabled: true,
+    commands: DEFAULT_SUMMARY_COMMANDS,
+    count: 100,
+    maxCount: 200,
+    prompt: DEFAULT_SUMMARY_PROMPT,
+    scope: "all",
     peers: [],
     maxTranscriptChars: 20_000,
   },
@@ -89,13 +110,17 @@ function stringList(value: unknown): string[] {
 function resolveReceive(raw: SnowLumaAccountConfig["receive"]): ResolvedReceiveConfig {
   const mention = raw?.mention ?? {};
   const digest = raw?.digest ?? {};
+  const summary = raw?.summary ?? {};
   const realtime = raw?.realtime ?? {};
   const history = raw?.history ?? {};
 
   const keywordMatch = mention.keywordMatch;
   const scope = digest.scope;
+  const summaryScope = summary.scope;
 
   const digestMaxMessages = positiveInt(digest.maxMessages, RECEIVE_DEFAULTS.digest.maxMessages);
+  const summaryCommands = stringList(summary.commands);
+  const summaryMaxCount = positiveInt(summary.maxCount, RECEIVE_DEFAULTS.summary.maxCount);
 
   return {
     mention: {
@@ -137,6 +162,28 @@ function resolveReceive(raw: SnowLumaAccountConfig["receive"]): ResolvedReceiveC
       maxTranscriptChars: positiveInt(
         digest.maxTranscriptChars,
         RECEIVE_DEFAULTS.digest.maxTranscriptChars,
+      ),
+    },
+    summary: {
+      enabled: bool(summary.enabled, RECEIVE_DEFAULTS.summary.enabled),
+      // An explicitly empty `commands: []` would leave nothing to type, so it
+      // falls back to the built-ins the same way an omitted key does.
+      commands: summaryCommands.length > 0 ? summaryCommands : [...RECEIVE_DEFAULTS.summary.commands],
+      // The default count is itself a user-visible request, so it obeys maxCount too.
+      count: Math.min(positiveInt(summary.count, RECEIVE_DEFAULTS.summary.count), summaryMaxCount),
+      maxCount: summaryMaxCount,
+      prompt:
+        typeof summary.prompt === "string" && summary.prompt.trim()
+          ? summary.prompt.trim()
+          : RECEIVE_DEFAULTS.summary.prompt,
+      scope:
+        summaryScope === "group" || summaryScope === "direct"
+          ? summaryScope
+          : RECEIVE_DEFAULTS.summary.scope,
+      peers: stringList(summary.peers),
+      maxTranscriptChars: positiveInt(
+        summary.maxTranscriptChars,
+        RECEIVE_DEFAULTS.summary.maxTranscriptChars,
       ),
     },
     realtime: {

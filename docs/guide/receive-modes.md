@@ -7,7 +7,10 @@
 | `mention` | 启用 | 单条消息的**判定逻辑** | 决定"要不要理这条消息" |
 | `realtime` | 启用 | 被 `mention` 判定为触发的消息 | 把连发的几条消息合并成一次 Agent 调用 |
 | `digest` | **关闭** | 范围内的**所有**消息，无关触发与否 | 定时/达量吐出一份聊天摘要 |
+| `summary` | 启用 | 只有 `/summary` 命令那一条消息 | 有人喊一声，就现拉最近 100 条记录做一份总结 |
 | `history` | 启用 | **所有**消息，无关触发与否 | 攒下近期聊天，触发回复时作为历史上下文一并带入，然后清空 |
+
+> **`summary` 是唯一一个"截流"的模式。** 其余模式都只是观察同一条消息流；`/summary` 命令消息一旦匹配就在流程最前面被截下（见下方流程图），不再进入任何一个缓冲引擎。它的素材也不来自这些缓冲区，而是现场向 SnowLuma 拉取的历史记录。
 
 > **`digest`（总结队列）与 `history`（回复队列）是两套分开存储的缓冲区。** `digest` 是"定时吐一份摘要"，按 `intervalMs`/`maxMessages` 到点或达量后 flush；`history` 是"回复时补一段上下文"，平时只累积、不发送，直到某条消息触发回复才把攒下的历史一次性塞进那次 Agent 调用并清空。两者各自独立累积同一批消息，互不消费对方的缓冲区。
 
@@ -27,6 +30,9 @@ senderId === selfId ？ ──是──▶ 丢弃（永远不处理自己发的�
         ▼
 isPeerAllowed(allowFrom/denyFrom) ？ ──否──▶ 丢弃
         │是
+        ▼
+matchSummaryCommand(msg, account) ？ ──是──▶ 拉取最近 count 条历史 ⇒ dispatchBatch(kind:"summary")
+        │否                                  （命令消息到此为止，不进下面任何一个引擎）
         ▼
 evaluateTrigger(msg, account)  ── mention 模式的判定逻辑，产出 TriggerDecision
   { triggered: bool, reason?, keyword? }
@@ -157,6 +163,59 @@ flush 时，`buildDigestBody()`（`src/dispatch.ts`）把 `prompt` 和渲染成 
 | `10:01:00` | 计时器触发 | `messages.length = 2 < minMessages(3)` ⇒ **抑制 flush**，重排下一个 60s 计时器 |
 | `10:01:30` | 第三条消息到达 | `messages.length = 3` |
 | `10:02:00` | 计时器再次触发 | `messages.length = 3 >= minMessages(3)` ⇒ flush，`reason: "interval"` |
+
+## `summary`：`/summary` 主动总结命令 {#summary-summary-主动总结命令}
+
+```json
+{
+  "receive": {
+    "summary": {
+      "enabled": true,
+      "commands": ["/summary", "/总结"],
+      "count": 100,
+      "maxCount": 200,
+      "scope": "all",
+      "peers": [],
+      "maxTranscriptChars": 20000
+    }
+  }
+}
+```
+
+`digest` 是"到点了自动吐一份"，`summary` 是"有人要才做一份"。默认**启用**：群里或私聊里任何人发一句 `/summary`（或 `/总结`），插件就会**现场向 SnowLuma 拉取该会话最近 100 条消息**（`get_group_msg_history` / `get_friend_msg_history`）并总结。
+
+这意味着它**不依赖 `digest`**：`digest.enabled: false` 时 `/summary` 照样能用，机器人刚进群、之前一条消息都没观察到时也能用——总结的素材来自 QQ 的历史记录接口，不是插件自己的缓冲区。
+
+### 命令的写法
+
+| 用户输入 | 效果 |
+|---|---|
+| `/summary` | 总结最近 `count`（默认 100）条 |
+| `/summary 30` | 总结最近 30 条（超过 `maxCount` 会被夹住） |
+| `/总结50` | 同上——CJK 命令词后面不需要空格 |
+| `@机器人 /summary` | 前导 `@机器人` 会先被剥掉再匹配 |
+| `/SUMMARY` | 命令词匹配大小写不敏感 |
+| `/summary 最近聊了什么` | 参数不是数字就忽略，按默认条数总结 |
+| `/summarylater` | **不匹配**——命令词后面必须是消息结尾、空白或数字 |
+| `帮我 /summary 一下` | **不匹配**——命令词必须在开头 |
+
+### 命令消息会绕开整条常规管线
+
+匹配成功的那条命令消息**不会**进入 `aggregator.accept()`：它不开 realtime 窗口、不进 digest 缓冲区、也不留在 history 回复历史里。命令本身是给机器人的指令，不是聊天内容，所以它既不该触发一次普通回复，也不该出现在下一次摘要的聊天记录里。正在进行中的 realtime 窗口和 digest 窗口完全不受影响。
+
+命令那条消息也会被从拉回来的历史记录里剔除（按 `messageId` 比对），所以总结里不会出现一行 `/summary`。为此插件实际请求的是 `count + 1` 条，保证剔除后仍有 `count` 条正文。
+
+`groupAutoReact` 开启时，命令消息同样会被贴表情——相当于一个"收到，正在总结"的回执。
+
+### 下发与回复
+
+组装方式和 digest 完全一致：`prompt` + `[HH:mm:ss] 昵称(qq): 文本` 的逐行记录，按 `maxTranscriptChars` 从最旧一端裁剪。三点不同：
+
+- **用的是 `summary.prompt`**，默认那段提示词里不含 SKIP 出口——用户主动要的总结，静默不回等于命令没反应。相应地，`SKIP` 静默逻辑只对 `digest` 批次生效，`summary` 批次即使回复 `SKIP` 也会照发。
+- **归属到发命令的人**：`SenderId`/`SenderName`/`MessageSid` 取命令那条消息，`replyToTrigger: true` 时回复以引用命令消息的形式发出。
+- **拉不到内容时会明说**：历史接口报错回 `获取最近聊天记录失败：<原因>`，一条都没有回 `最近没有可以总结的聊天记录。`——两种情况都不会调用 Agent。
+
+**总结轮次同样永远不会被授权执行文本命令**：`dispatchBatch` 里凡是 `batch.kind !== "realtime"` 的批次，`CommandAuthorized` 都硬编码为 `false`、`CommandSource` 整个省略、`CommandBody`/`RawBody` 都是空字符串。用户授权的是"做一份总结"，不是"执行聊天记录里碰巧长得像命令的那一行"。
 
 ## `realtime`：亚秒级窗口聚合连发消息 {#realtime-亚秒级窗口聚合连发消息}
 

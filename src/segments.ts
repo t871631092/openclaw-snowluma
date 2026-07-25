@@ -181,6 +181,55 @@ export function renderSegments(segments: SnowLumaMessageSegment[]): string {
   return parts.join("");
 }
 
+/**
+ * Normalize one entry from `get_group_msg_history` / `get_friend_msg_history`
+ * into the same shape a live event produces.
+ *
+ * History entries arrive as untyped `JsonObject`s (the SDK types them no more
+ * precisely than the wire does) and, unlike an event, carry no reliable
+ * `message_type`/`group_id`/`self_id` — the caller already knows which peer it
+ * asked about, so that context is passed in via `peer`. Returns `null` when the
+ * entry has no usable sender or message id, so a malformed row is skipped
+ * rather than rendered as `?(?)`.
+ */
+export function normalizeHistoryEntry(
+  entry: unknown,
+  peer: { peerId: string; peerKind: NormalizedMessage["peerKind"]; groupId?: number; selfId: number },
+): NormalizedMessage | null {
+  if (!isRecord(entry)) return null;
+
+  const sender = isRecord(entry.sender) ? entry.sender : {};
+  const senderId = Number(sender.user_id ?? entry.user_id);
+  const messageId = Number(entry.message_id);
+  if (!Number.isFinite(senderId) || !Number.isFinite(messageId)) return null;
+
+  const rawMessage = typeof entry.raw_message === "string" ? entry.raw_message : "";
+  const segments = toSegments(entry.message, rawMessage);
+  const { mentions, atAll } = extractMentions(segments);
+  const time = Number(entry.time);
+  const senderName = firstNonEmpty(sender.card, sender.nickname) ?? String(senderId);
+
+  return {
+    peerId: peer.peerId,
+    peerKind: peer.peerKind,
+    groupId: peer.groupId,
+    senderId,
+    senderName,
+    selfId: peer.selfId,
+    messageId,
+    time: Number.isFinite(time) ? time : 0,
+    text: extractText(segments),
+    rawText: rawMessage,
+    segments,
+    mentions,
+    atAll,
+    imageUrls: extractImageUrls(segments),
+    recordUrls: extractRecordUrls(segments),
+    replyToId: extractReplyToId(segments),
+    forwardIds: extractForwardIds(segments),
+  };
+}
+
 /** Build the fully-normalized message the rest of the plugin operates on. */
 export function normalizeMessageEvent(event: OneBotMessageEvent): NormalizedMessage {
   const segments = toSegments(event.message, event.raw_message);

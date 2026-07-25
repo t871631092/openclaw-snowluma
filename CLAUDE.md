@@ -23,7 +23,9 @@ npm run docs:build  # VitePress static build
 
 Inbound pipeline: SnowLuma WS → `gateway.ts` → `segments.ts` (normalize) → `triggers.ts` (decide) →
 `aggregator.ts` (window/batch) → `dispatch.ts` (resolves quotes via `quote.ts`, calls the OpenClaw
-runtime, delivers the reply) → `outbound.ts` (send back to QQ).
+runtime, delivers the reply) → `outbound.ts` (send back to QQ). One branch skips the middle: a
+`/summary` command is intercepted in `gateway.ts` by `summary.ts`, which fetches its own transcript
+from SnowLuma and hands `dispatch.ts` a `kind: "summary"` batch directly.
 
 `src/*.ts`, one line each:
 
@@ -36,6 +38,7 @@ runtime, delivers the reply) → `outbound.ts` (send back to QQ).
 | `segments.ts` | Normalizes raw OneBot message payloads (array/CQ-string/plain-string) into `SnowLumaMessageSegment[]` / `NormalizedMessage`; renders segments back to display text. |
 | `triggers.ts` | Pure decision logic: `evaluateTrigger` (mention/keyword/direct/reply-to-self), no I/O. |
 | `aggregator.ts` | Three independent engines sharing one `accept()` entry point: realtime coalescing, digest summarisation, and a rolling reply-history buffer (drained into a realtime batch's `history` on flush). Timers are injected. |
+| `summary.ts` | The on-demand `/summary` command: `matchSummaryCommand` (pure) + `runSummaryCommand`, which fetches the peer's recent history via `get_group_msg_history`/`get_friend_msg_history` and dispatches a `kind: "summary"` batch. Bypasses the aggregator entirely. |
 | `quote.ts` | Actively resolves quoted/forwarded messages via `get_msg`/`get_forward_msg`, with depth/node/char budgets. |
 | `dispatch.ts` | Turns one `AggregatedBatch` into a single agent turn via `pluginRuntime.channel.*`, then delivers the reply back to QQ. |
 | `gateway.ts` | Owns one long-lived connection per account; wires client events → triggers → aggregator → dispatch; tracks self-sent message ids. |
@@ -64,10 +67,11 @@ runtime, delivers the reply) → `outbound.ts` (send back to QQ).
 - **Timers are injected.** `aggregator.ts` takes `now`/`setTimeoutFn`/`clearTimeoutFn` so tests drive
   windowing deterministically instead of racing real wall-clock delays. Don't reach for a bare
   `setTimeout`/`Date.now()` inside logic that needs to stay testable this way.
-- **Digest turns must never set `CommandAuthorized: true`.** A digest batch summarises a chat window, not
-  a command from a specific user — `dispatch.ts` hard-wires `CommandAuthorized: false` and omits
-  `CommandSource` entirely for `batch.kind === "digest"`, regardless of `allowFrom`. Do not special-case
-  this away.
+- **Summarisation turns must never set `CommandAuthorized: true`.** A `digest`/`summary` batch feeds the
+  agent a chat window, not a command from a specific user — `dispatch.ts` hard-wires
+  `CommandAuthorized: false` and omits `CommandSource` entirely for every `batch.kind !== "realtime"`,
+  regardless of `allowFrom`. `/summary` is no exception: the user authorized a summary, not whatever the
+  fetched transcript happens to contain. Do not special-case this away.
 - **Neither entry's runtime module graph (`index.js` *and* `setup-entry.js`) may import anything from
   `openclaw/*`.** OpenClaw's loader synchronously `require()`s BOTH entries while also asynchronously
   `import()`ing them; if a sync require touches an `openclaw/plugin-sdk/*` module that the async import

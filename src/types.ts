@@ -53,6 +53,30 @@ export interface DigestModeConfig {
 }
 
 /**
+ * On-demand counterpart to {@link DigestModeConfig}: a chat member types
+ * `/summary` and the bot fetches that conversation's most recent messages
+ * straight from QQ (not from the digest window) and summarises them right away.
+ */
+export interface SummaryCommandConfig {
+  /** Enable the `/summary` command. Default: true. */
+  enabled?: boolean;
+  /** Command words that trigger it, matched on the message's leading token. Default: `["/summary", "/总结"]`. */
+  commands?: string[];
+  /** How many recent messages to fetch when the command carries no count. Default: 100. */
+  count?: number;
+  /** Ceiling on the count a user may request via `/summary <n>`. Default: 200. */
+  maxCount?: number;
+  /** Instruction prepended to the transcript when dispatching. */
+  prompt?: string;
+  /** Which chats accept the command. Default: "all". */
+  scope?: "group" | "direct" | "all";
+  /** Only accept the command in these peers (e.g. `group:123`). Empty/omitted means all in scope. */
+  peers?: string[];
+  /** Hard cap on transcript characters handed to the agent. Default: 20000. */
+  maxTranscriptChars?: number;
+}
+
+/**
  * Coalesce a burst of messages that arrive within a sub-second window into one
  * agent turn, then answer immediately. This is the "type three lines in a row"
  * case — we want one reply, not three.
@@ -94,6 +118,7 @@ export interface HistoryModeConfig {
 export interface ReceiveConfig {
   mention?: MentionModeConfig;
   digest?: DigestModeConfig;
+  summary?: SummaryCommandConfig;
   realtime?: RealtimeModeConfig;
   history?: HistoryModeConfig;
 }
@@ -102,6 +127,11 @@ export interface ReceiveConfig {
 export interface ResolvedReceiveConfig {
   mention: Required<Omit<MentionModeConfig, "keywords">> & { keywords: string[] };
   digest: Required<Omit<DigestModeConfig, "peers" | "prompt">> & {
+    peers: string[];
+    prompt: string;
+  };
+  summary: Required<Omit<SummaryCommandConfig, "commands" | "peers" | "prompt">> & {
+    commands: string[];
     peers: string[];
     prompt: string;
   };
@@ -247,7 +277,7 @@ export interface NormalizedMessage {
 }
 
 /** Why the agent is being woken up. */
-export type TriggerReason = "mention" | "keyword" | "direct" | "reply-to-self" | "digest";
+export type TriggerReason = "mention" | "keyword" | "direct" | "reply-to-self" | "digest" | "summary";
 
 export interface TriggerDecision {
   triggered: boolean;
