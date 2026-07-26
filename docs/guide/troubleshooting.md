@@ -35,6 +35,24 @@
 4. 确认这个聊天没有被 `allowFrom`/`denyFrom` 挡在门外——`isPeerAllowed` 检查发生在 `evaluateTrigger`/`aggregator.accept` **之前**，被拒绝的来源连 digest 缓冲区都进不去。
 5. 如果窗口确实 flush 了，但群里什么都没收到：检查 Agent 的回复是不是恰好等于 `SKIP`（大小写不敏感，裁剪首尾空白后比较）——这种情况下插件按设计**不会**发送任何消息，属于正常路径而非故障。
 
+## `/summary` 没反应 {#summary-没反应}
+
+1. 命令词必须在**消息开头**（前导 `@机器人` 会被自动剥掉）。`帮我 /summary 一下` 不匹配，`/summarylater` 也不匹配——命令词后面只能是消息结尾、空白或数字。
+2. 确认 `receive.summary.enabled` 为 `true`，以及该聊天落在 `scope`/`peers` 范围内。
+3. 确认这个聊天没被 `allowFrom`/`denyFrom` 挡住——这道检查在命令匹配**之前**。
+4. 如果收到的是「获取最近聊天记录失败」或「最近没有可以总结的聊天记录」，说明命令已经生效，问题出在 SnowLuma 的历史消息接口：确认后端实现了 `get_group_msg_history` / `get_friend_msg_history`，且机器人在该群里有读取权限。
+
+## 总结发出来是文字，不是图片 {#总结发出来是文字不是图片}
+
+图片渲染在任何一步失败都会**自动回退纯文本**，所以先看日志里的 `[snowluma:render]` 行，它会直接说明原因：
+
+- `image rendering unavailable (Cannot find package 'satori')` —— 插件是在这个功能之前安装的，依赖不在安装目录里。重装插件即可（`satori` / `@resvg/resvg-wasm` / `marked` 都是纯 JS/WASM，不需要安装脚本）。
+- `no usable font found` —— 主机上没有能被解析的中文字体。Linux 上装 `fonts-noto-cjk`，或把 `render.fontPath` 指向一个具体的 `.ttf`/`.otf`。
+- `reply is N chars (> maxChars ...)` —— 回复太长，按配置直接走文本。调大 `render.maxChars` 即可。
+- 完全没有 `[snowluma:render]` 日志 —— `render.enabled` 是 `false`，或者这是一次 realtime 普通回复（普通对话永远走纯文本）。
+
+中文渲染成方块的情况不会出现：satori 把文字转成矢量路径后再光栅化，字体只在渲染阶段用一次，所以要么正常出图，要么明确回退文本。
+
 ## `ERR_MODULE_NOT_FOUND`，报错路径指向 `@snowluma/sdk` {#err-module-not-found}
 
 说明加载到了**未打补丁**的 `@snowluma/sdk`（背景原理见[快速开始 · `@snowluma/sdk` ESM 补丁说明](/guide/getting-started#snowluma-sdk-esm-补丁说明)）。

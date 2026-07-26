@@ -304,9 +304,11 @@ export async function sendMedia(params: {
   to: string;
   mediaPath: string;
   caption?: string;
+  /** Quote-reply the media message to this id. Ignored on the file-upload path, which has no message segment. */
+  replyToId?: string | number;
   debug?: OutboundDebug;
 }): Promise<{ messageIds: string[] }> {
-  const { client, to, mediaPath, caption, debug } = params;
+  const { client, to, mediaPath, caption, replyToId, debug } = params;
   const target = parseTarget(to);
   const fileRef = toFileUri(mediaPath);
   const ext = extensionOf(mediaPath);
@@ -314,8 +316,9 @@ export async function sendMedia(params: {
   const messageIds: string[] = [];
   let mediaResult: unknown;
   if (IMAGE_EXTENSIONS.has(ext)) {
-    const outgoing = getSnowLumaSdk().image(fileRef);
-    emitOutboundDebug(debug, "sendImage", target, { mediaPath, fileRef, message: serializeOutgoingMessage(outgoing) });
+    const { image, reply } = getSnowLumaSdk();
+    const outgoing = replyToId !== undefined ? reply(replyToId).image(fileRef) : image(fileRef);
+    emitOutboundDebug(debug, "sendImage", target, { mediaPath, fileRef, replyToId, message: serializeOutgoingMessage(outgoing) });
     mediaResult = await dispatchOutgoing(client, target, outgoing);
   } else if (AUDIO_EXTENSIONS.has(ext)) {
     const outgoing = getSnowLumaSdk().record(fileRef);

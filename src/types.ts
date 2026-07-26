@@ -139,6 +139,35 @@ export interface ResolvedReceiveConfig {
   history: Required<HistoryModeConfig>;
 }
 
+// ── Markdown → image rendering ─────────────────────────────────────────────
+
+/**
+ * Render summarisation replies (digest and `/summary`) as a PNG instead of
+ * text. Long structured Markdown reads badly in a QQ chat bubble — headings,
+ * bullets and code all collapse to flat text — so those turns are rasterised
+ * and sent as an image, falling back to text whenever rendering is impossible.
+ */
+export interface RenderImageConfig {
+  /** Render digest / `/summary` replies as an image. Default: true. */
+  enabled?: boolean;
+  /** Content width in CSS px, before `scale`. Default: 720. */
+  width?: number;
+  /** Pixel-ratio multiplier applied when rasterising. Default: 2. */
+  scale?: number;
+  /** Colour scheme. Default: "light". */
+  theme?: "light" | "dark";
+  /** Base body font size in px; headings and code derive from it. Default: 26. */
+  fontSize?: number;
+  /** Absolute path to the text font (.ttf/.otf/.ttc). Auto-detected per platform when empty. */
+  fontPath?: string;
+  /** Absolute path to the bold face. Auto-detected when empty; without one, bold renders at regular weight. */
+  boldFontPath?: string;
+  /** Skip rendering (and send text) when the reply exceeds this many characters. Default: 8000. */
+  maxChars?: number;
+}
+
+export type ResolvedRenderConfig = Required<RenderImageConfig>;
+
 // ── Quote / forward resolution ─────────────────────────────────────────────
 
 export interface QuoteConfig {
@@ -197,6 +226,8 @@ export interface SnowLumaAccountConfig {
   };
   receive?: ReceiveConfig;
   quote?: QuoteConfig;
+  /** Markdown → image rendering for digest / `/summary` replies. */
+  render?: RenderImageConfig;
   /** Register the plugin's agent tools. Default: true. */
   tools?: { enabled?: boolean };
 }
@@ -225,6 +256,7 @@ export interface ResolvedSnowLumaAccount {
   reconnect: { enabled: boolean; retries: number; minDelayMs: number; maxDelayMs: number };
   receive: ResolvedReceiveConfig;
   quote: ResolvedQuoteConfig;
+  render: ResolvedRenderConfig;
   toolsEnabled: boolean;
   /** The raw config this account was resolved from. */
   config: SnowLumaAccountConfig;

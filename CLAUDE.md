@@ -27,6 +27,10 @@ runtime, delivers the reply) → `outbound.ts` (send back to QQ). One branch ski
 `/summary` command is intercepted in `gateway.ts` by `summary.ts`, which fetches its own transcript
 from SnowLuma and hands `dispatch.ts` a `kind: "summary"` batch directly.
 
+Outbound, summarisation replies (`digest` + `summary`) take a second detour: `dispatch.ts` renders the
+agent's Markdown to a PNG via `render.ts` (→ `markdown-layout.ts`) and sends that image instead of
+text, falling back to text on any failure. Realtime replies are always plain text.
+
 `src/*.ts`, one line each:
 
 | File | Purpose |
@@ -39,6 +43,8 @@ from SnowLuma and hands `dispatch.ts` a `kind: "summary"` batch directly.
 | `triggers.ts` | Pure decision logic: `evaluateTrigger` (mention/keyword/direct/reply-to-self), no I/O. |
 | `aggregator.ts` | Three independent engines sharing one `accept()` entry point: realtime coalescing, digest summarisation, and a rolling reply-history buffer (drained into a realtime batch's `history` on flush). Timers are injected. |
 | `summary.ts` | The on-demand `/summary` command: `matchSummaryCommand` (pure) + `runSummaryCommand`, which fetches the peer's recent history via `get_group_msg_history`/`get_friend_msg_history` and dispatches a `kind: "summary"` batch. Bypasses the aggregator entirely. |
+| `markdown-layout.ts` | Pure: `marked` token tree → satori element tree (`{type, props}` objects). No runtime deps — testable as plain data. |
+| `render.ts` | Markdown → PNG for summarisation replies: lazy-loads `marked`/`satori`/`@resvg/resvg-wasm`, resolves a CJK font (config path or per-platform probe), returns `null` on every failure so callers fall back to text. |
 | `quote.ts` | Actively resolves quoted/forwarded messages via `get_msg`/`get_forward_msg`, with depth/node/char budgets. |
 | `dispatch.ts` | Turns one `AggregatedBatch` into a single agent turn via `pluginRuntime.channel.*`, then delivers the reply back to QQ. |
 | `gateway.ts` | Owns one long-lived connection per account; wires client events → triggers → aggregator → dispatch; tracks self-sent message ids. |
@@ -95,6 +101,14 @@ from SnowLuma and hands `dispatch.ts` a `kind: "summary"` batch directly.
   values from `getSnowLumaSdk()`; and `typebox` is type-only (tools.ts ships plain JSON Schema
   literals). `test/load-graph.test.ts` enforces all of this for both entry graphs. (History:
   `Cannot find module 'typebox'` up to 0.1.3; fixed structurally in 0.1.4.)
+- **A new runtime dependency must survive `--ignore-scripts`, and must be deferred.** Anything with a
+  `postinstall`/`install` hook or a downloaded binary (stock `puppeteer`, `node-html-to-image`) is
+  unusable on a gateway: the download never runs. The Markdown→PNG stack (`marked`, `satori`,
+  `@resvg/resvg-wasm`) was chosen on exactly that criterion — all three are pure JS/WASM with no
+  install hooks and no native binaries, so a bare manifest install always yields a working copy. They
+  are still loaded only through `import()` inside `src/render.ts`, so an older install that predates
+  the feature degrades to text replies instead of failing to load the plugin. `DEFERRED_PACKAGES` in
+  `test/load-graph.test.ts` is the allowlist; adding a package means adding it there, with its loader.
 - **The control-UI config editor reads its schema from the MANIFEST, and that schema may not use
   `$ref`.** The gateway (verified against openclaw 2026.7.1) builds its `config.schema` response for
   `channels.snowluma` from `openclaw.plugin.json` → `channelConfigs.snowluma.{schema,uiHints}` via the

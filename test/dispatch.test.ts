@@ -3,7 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { describe, expect, it, vi } from "vitest";
 import type { AggregatedBatch } from "../src/aggregator.js";
-import { QUOTE_DEFAULTS, RECEIVE_DEFAULTS } from "../src/config.js";
+import { QUOTE_DEFAULTS, RECEIVE_DEFAULTS, RENDER_DEFAULTS } from "../src/config.js";
 import { buildBatchBody, dispatchBatch, resolveInboundCommandAuthorization } from "../src/dispatch.js";
 import type {
   NormalizedMessage,
@@ -27,6 +27,10 @@ function makeAccount(
   const { digest, ...rest } = overrides;
   const receive = cloneReceive();
   if (digest) Object.assign(receive.digest, digest);
+  // Image rendering is ON by default in production, but these tests assert the
+  // TEXT delivery path — and a real render would depend on the host's fonts.
+  // The image path has its own tests (summary.test.ts) with an injected renderer.
+  const render = { ...RENDER_DEFAULTS, enabled: false };
 
   return {
     accountId: "default",
@@ -41,6 +45,7 @@ function makeAccount(
     reconnect: { enabled: true, retries: Number.POSITIVE_INFINITY, minDelayMs: 1000, maxDelayMs: 30_000 },
     receive,
     quote: { ...QUOTE_DEFAULTS },
+    render,
     toolsEnabled: true,
     config: {},
     ...rest,

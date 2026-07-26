@@ -20,12 +20,16 @@
  */
 
 import type { SnowLumaApiClient } from "@snowluma/sdk";
+import { rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import type { AggregatedBatch } from "./aggregator.js";
 import { OPENCLAW_EMPTY_INPUT_NOTICE, sendMedia as defaultSendMedia, sendText as defaultSendText } from "./outbound.js";
 import { formatQuoteContext, resolveQuoteContext as defaultResolveQuoteContext } from "./quote.js";
 import type { QuoteDeps } from "./quote.js";
+import { renderMarkdownToPng as defaultRenderMarkdownToPng } from "./render.js";
 import { getSnowLumaRuntime } from "./runtime.js";
 import { renderSegments } from "./segments.js";
 import { stripLeadingMention } from "./triggers.js";
@@ -48,6 +52,8 @@ export interface DispatchDeps {
   resolveQuote?: (msg: NormalizedMessage, deps: QuoteDeps) => Promise<ResolvedQuote | null>;
   /** Defaults to `sendText`/`sendMedia` from ./outbound.js. */
   send?: { sendText: typeof defaultSendText; sendMedia: typeof defaultSendMedia };
+  /** Defaults to `renderMarkdownToPng` from ./render.js; injectable so tests need no fonts or WASM. */
+  renderImage?: typeof defaultRenderMarkdownToPng;
 }
 
 // ── Command authorization ───────────────────────────────────────────────
@@ -215,6 +221,7 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
     const runtime = deps.runtime ?? getSnowLumaRuntime();
     const resolveQuote = deps.resolveQuote ?? defaultResolveQuoteContext;
     const send = deps.send ?? { sendText: defaultSendText, sendMedia: defaultSendMedia };
+    const renderImage = deps.renderImage ?? defaultRenderMarkdownToPng;
 
     // In debug mode, every outbound send records its raw payload. Emitted at
     // `info` level so it is actually visible when the operator flips the flag on.
@@ -339,6 +346,37 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
     const messagesConfig = runtime.channel.reply.resolveEffectiveMessagesConfig(cfg, route.agentId);
 
+    /**
+     * Render `markdown` and send it as a QQ image. Returns false when the image
+     * could not be produced or could not be sent, so the caller can fall back
+     * to text — a summary must always arrive in some form.
+     */
+    const deliverAsImage = async (markdown: string, replyToId: number | undefined): Promise<boolean> => {
+      if (!account.render.enabled) return false;
+
+      const png = await renderImage(markdown, account.render, log);
+      if (!png) return false;
+
+      // SnowLuma reads the image back off disk (the segment carries a file://
+      // URI), so it has to exist as a real file for the duration of the send.
+      const file = join(
+        tmpdir(),
+        `snowluma-${account.accountId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`,
+      );
+      try {
+        await writeFile(file, png);
+        await send.sendMedia({ client, to: address, mediaPath: file, replyToId, debug: outboundDebug });
+        runtime.channel.activity.record({ channel: "snowluma", accountId: account.accountId, direction: "outbound" });
+        return true;
+      } catch (err) {
+        log?.error?.(`[snowluma:${account.accountId}] summary image send failed (${String(err)}) — falling back to text`);
+        return false;
+      } finally {
+        // Best-effort: a leftover temp file is harmless, a throw here would not be.
+        await rm(file, { force: true }).catch(() => {});
+      }
+    };
+
     const sendErrorNotice = async (errorText: string) => {
       try {
         await send.sendText({ client, to: address, text: errorText, chunkLimit: account.textChunkLimit, debug: outboundDebug });
@@ -385,15 +423,25 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
           const replyText = payload.text ?? "";
           if (replyText.trim()) {
+            // A digest has nothing to quote-reply to; a realtime turn quotes
+            // the message that opened the window, and a `/summary` turn
+            // quotes the command itself.
+            const replyToId = account.replyToTrigger
+              ? batch.kind === "realtime"
+                ? first.messageId
+                : batch.commandMessage?.messageId
+              : undefined;
+
+            // Summarisation replies are long structured Markdown, which a QQ
+            // text bubble flattens into an unreadable wall — render them to an
+            // image instead. `deliverAsImage` returns false for every failure
+            // mode (disabled, no font, packages missing, render error), which
+            // falls through to the plain-text send below.
+            if (isSummarisation && (await deliverAsImage(replyText, replyToId))) {
+              return;
+            }
+
             try {
-              // A digest has nothing to quote-reply to; a realtime turn quotes
-              // the message that opened the window, and a `/summary` turn
-              // quotes the command itself.
-              const replyToId = account.replyToTrigger
-                ? batch.kind === "realtime"
-                  ? first.messageId
-                  : batch.commandMessage?.messageId
-                : undefined;
               await send.sendText({
                 client,
                 to: address,

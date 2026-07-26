@@ -138,6 +138,25 @@ const quoteSchema: JsonSchemaLiteral = {
   },
 };
 
+const renderSchema: JsonSchemaLiteral = {
+  type: "object",
+  properties: {
+    enabled: { type: "boolean", default: true, description: "把 digest / /summary 的回复渲染成图片发送（失败自动回退纯文本）" },
+    width: { type: "number", default: 720, description: "图片内容宽度（CSS px，缩放前）" },
+    scale: { type: "number", default: 2, description: "光栅化倍率，相当于设备像素比" },
+    theme: {
+      type: "string",
+      enum: ["light", "dark"],
+      default: "light",
+      description: "配色主题",
+    },
+    fontSize: { type: "number", default: 26, description: "正文字号（px），标题与代码块按比例缩放" },
+    fontPath: { type: "string", description: "正文字体文件路径（.ttf/.otf/.ttc）；留空则按平台自动探测" },
+    boldFontPath: { type: "string", description: "粗体字体文件路径；留空自动探测，找不到时粗体按常规字重渲染" },
+    maxChars: { type: "number", default: 8000, description: "回复超过该字符数时不转图片，直接发文本" },
+  },
+};
+
 const toolsSchema: JsonSchemaLiteral = {
   type: "object",
   properties: {
@@ -165,6 +184,7 @@ function accountFieldProperties(): Record<string, JsonSchemaLiteral> {
     reconnect: reconnectSchema,
     receive: receiveSchema,
     quote: quoteSchema,
+    render: renderSchema,
     tools: toolsSchema,
   };
 }

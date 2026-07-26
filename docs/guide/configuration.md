@@ -33,6 +33,7 @@
 | `reconnect` | `object` | 见下表 | WebSocket 重连调优，直接传给 `@snowluma/sdk` 的 `SnowLumaWebSocketClientOptions.reconnect`。 |
 | `receive` | `object` | 见下方各表 | 接收模式的配置（`mention` / `digest` / `summary` / `realtime` / `history`）。 |
 | `quote` | `object` | 见下表 | 引用/合并转发主动解析配置。 |
+| `render` | `object` | 见下表 | 把 digest / `/summary` 的总结回复渲染成图片，见[render](#render-把总结渲染成图片)。 |
 | `tools` | `object` | 见下表 | Agent 工具注册开关。 |
 | `accounts` | `object` | — | 额外命名账号，仅在 `default` 账号（顶层 `channels.snowluma`）下有意义，见[多账号](#多账号)。 |
 
@@ -87,6 +88,37 @@
 > 以下是这个会话最近的聊天记录。请用简洁的中文总结其中讨论的主题、结论和待办事项，必要时按话题分点列出。这是用户主动请求的总结，请直接给出总结内容，不要回复 SKIP。
 
 与 `digest` 的区别、消息从哪里来、失败时会回什么，详见[接收模式 · summary](/guide/receive-modes#summary-summary-主动总结命令)。
+
+## `render` —— 把总结渲染成图片 {#render-把总结渲染成图片}
+
+写在账号顶层（与 `receive`/`quote` 同级）。**只作用于 digest 和 `/summary` 这两类总结回复**，日常对话回复永远是纯文本。
+
+| Key | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `enabled` | `boolean` | `true` | 是否把总结回复渲染成 PNG 发送。任一环节失败都会自动回退纯文本，不会静默丢消息。 |
+| `width` | `number` | `720` | 图片内容宽度（CSS px，缩放前）。高度由内容自动撑开，不需要配置。 |
+| `scale` | `number` | `2` | 光栅化倍率，相当于设备像素比；实际输出宽度是 `width × scale`。允许小数。 |
+| `theme` | `"light" \| "dark"` | `"light"` | 配色主题。传入其他值回退 `"light"`。 |
+| `fontSize` | `number` | `26` | 正文字号（px）。标题、代码块、表格都按这个值等比缩放。 |
+| `fontPath` | `string` | `""`（自动探测） | 正文字体文件（`.ttf`/`.otf`/`.ttc`）。留空时按平台探测常见中文字体。 |
+| `boldFontPath` | `string` | `""`（自动探测） | 粗体字体文件。找不到时 `**加粗**` 会按常规字重渲染（satori 不会合成字重）。 |
+| `maxChars` | `number` | `8000` | 回复超过该字符数就不转图片，直接发文本。 |
+
+### 字体
+
+渲染链路是 `marked` → `satori` → `@resvg/resvg-wasm`，全链路纯 JS/WASM，没有原生二进制、没有安装脚本，因此能通过 OpenClaw 的 `--ignore-scripts` 安装。
+
+satori 会把文字**转成矢量路径**再交给光栅化器，所以只有 satori 这一步需要字体文件，光栅化阶段不需要任何系统字体——同一份配置在 Windows 和 Linux 容器里出图完全一致。
+
+留空 `fontPath` 时按平台依次尝试：
+
+| 平台 | 探测顺序 |
+|---|---|
+| Windows | `Deng.ttf`（等线）→ `simhei.ttf` → `msyh.ttc` → `simsun.ttc` |
+| Linux | Noto Sans CJK（`.ttc`/`.otf`）→ Noto Serif CJK → 文泉驿正黑/微米黑 |
+| macOS | `PingFang.ttc` → `STHeiti Light.ttc` → `Hiragino Sans GB.ttc` → `Arial Unicode.ttf` |
+
+候选字体只有在**真的能被 satori 解析**（用一次极小的探测渲染验证）之后才会被采用，因此某些 `.ttc` 字体集解析失败时会自动跳到下一个候选。一个都没命中时，日志会给出明确提示，回复照常以纯文本发出。Linux 容器里最简单的解法是装 `fonts-noto-cjk`，或者直接把 `fontPath` 指到一个具体的字体文件。
 
 ## `receive.realtime` —— 亚秒级消息聚合
 

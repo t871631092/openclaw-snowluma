@@ -215,6 +215,15 @@ flush 时，`buildDigestBody()`（`src/dispatch.ts`）把 `prompt` 和渲染成 
 - **归属到发命令的人**：`SenderId`/`SenderName`/`MessageSid` 取命令那条消息，`replyToTrigger: true` 时回复以引用命令消息的形式发出。
 - **拉不到内容时会明说**：历史接口报错回 `获取最近聊天记录失败：<原因>`，一条都没有回 `最近没有可以总结的聊天记录。`——两种情况都不会调用 Agent。
 
+### 回复默认是一张图片
+
+digest 和 `/summary` 的回复通常是带标题、分点、代码块的长 Markdown，塞进 QQ 文本气泡会被压成一坨。所以这两类回复默认**渲染成 PNG 发送**（`render.enabled: true`，见[配置参考 · render](/guide/configuration#render-把总结渲染成图片)）：
+
+- 渲染链路 `marked` → `satori` → `@resvg/resvg-wasm`，纯 JS/WASM，不需要浏览器、不需要原生二进制。
+- 图片仍然以引用回复的形式挂在 `/summary` 命令那条消息上（`replyToTrigger: true` 时）。
+- **任何一步失败都自动回退纯文本**：包没装、找不到中文字体、渲染或发送报错、内容超过 `maxChars`——都只是退回文本，不会让总结丢失。
+- 普通对话回复（realtime）永远是纯文本，不受这个开关影响。
+
 **总结轮次同样永远不会被授权执行文本命令**：`dispatchBatch` 里凡是 `batch.kind !== "realtime"` 的批次，`CommandAuthorized` 都硬编码为 `false`、`CommandSource` 整个省略、`CommandBody`/`RawBody` 都是空字符串。用户授权的是"做一份总结"，不是"执行聊天记录里碰巧长得像命令的那一行"。
 
 ## `realtime`：亚秒级窗口聚合连发消息 {#realtime-亚秒级窗口聚合连发消息}

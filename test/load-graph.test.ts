@@ -107,6 +107,29 @@ function collectRuntimeBareImports(entry: string): BareImportHit[] {
   return hits;
 }
 
+/**
+ * The only bare packages the entry graphs may reach at runtime, mapped to the
+ * single module allowed to `import()` each one.
+ *
+ * All of them are deferred for the same reason (the gateway installs with
+ * `--ignore-scripts` and controls which dependencies exist), but they earn
+ * their place differently:
+ *
+ * - `@snowluma/sdk` — MUST be dynamic: its published build needs the ESM
+ *   specifier patch in `src/sdk.ts` to run before the import is even linked.
+ * - `satori` / `@resvg/resvg-wasm` / `marked` — the Markdown→PNG stack behind
+ *   `render.ts`. Chosen because all three are pure JS/WASM with no install
+ *   hooks and no native binaries, so a bare manifest install always yields a
+ *   working copy; deferred so that an older install that predates the feature
+ *   degrades to text replies instead of failing to load the plugin.
+ */
+const DEFERRED_PACKAGES: Record<string, string> = {
+  "@snowluma/sdk": "src/sdk.ts",
+  satori: "src/render.ts",
+  "@resvg/resvg-wasm": "src/render.ts",
+  marked: "src/render.ts",
+};
+
 const formatHits = (hits: BareImportHit[]): string =>
   hits.map((h) => `${h.dynamic ? "import()" : "static"} ${h.spec}  (in ${h.file})`).join("\n");
 
@@ -130,17 +153,19 @@ describe("plugin-load graph — entry graphs stay host- and install-independent"
       ).toEqual([]);
     });
 
-    it(`${entry}'s runtime graph defers @snowluma/sdk: dynamic import, only from src/sdk.ts`, () => {
+    it(`${entry}'s runtime graph only defers the allowlisted packages, each from its own loader`, () => {
       const dynamicBare = hits.filter((h) => h.dynamic && !h.spec.startsWith("node:"));
       for (const hit of dynamicBare) {
-        expect(hit.spec, `unexpected dynamic bare import:\n${formatHits([hit])}`).toBe("@snowluma/sdk");
-        expect(hit.file, `dynamic @snowluma/sdk import outside the self-patching loader:\n${formatHits([hit])}`).toBe(
-          "src/sdk.ts",
-        );
+        const loader = DEFERRED_PACKAGES[hit.spec];
+        expect(loader, `unexpected dynamic bare import:\n${formatHits([hit])}`).toBeDefined();
+        expect(hit.file, `deferred package imported outside its loader module:\n${formatHits([hit])}`).toBe(loader);
       }
-      // The loader itself must be part of both entry graphs (it is what makes
-      // the deferred import reachable at all).
-      expect(dynamicBare.length, "expected src/sdk.ts's deferred import(\"@snowluma/sdk\") in the graph").toBeGreaterThan(0);
+      // The SDK loader itself must be part of both entry graphs (it is what
+      // makes the deferred import reachable at all).
+      expect(
+        dynamicBare.some((h) => h.spec === "@snowluma/sdk"),
+        'expected src/sdk.ts\'s deferred import("@snowluma/sdk") in the graph',
+      ).toBe(true);
     });
   }
 
