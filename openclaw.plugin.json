@@ -2,7 +2,7 @@
   "id": "openclaw-snowluma",
   "name": "SnowLuma",
   "description": "OpenClaw channel plugin connecting QQ via the SnowLuma SDK. Speaks to SnowLuma exclusively through @snowluma/sdk (WebSocket + action client); never reimplements the OneBot protocol on the wire.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "channels": ["snowluma"],
   "channelEnvVars": {
     "snowluma": [
@@ -396,56 +396,6 @@
               }
             }
           },
-          "render": {
-            "type": "object",
-            "additionalProperties": false,
-            "description": "Render digest and /summary replies as a PNG instead of text. Long structured Markdown is unreadable in a QQ text bubble; rendering falls back to text whenever an image cannot be produced.",
-            "properties": {
-              "enabled": {
-                "type": "boolean",
-                "default": true,
-                "description": "Render digest / /summary replies as an image. Default: true."
-              },
-              "width": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "default": 720,
-                "description": "Content width in CSS px, before scale. Default: 720."
-              },
-              "scale": {
-                "type": "number",
-                "exclusiveMinimum": 0,
-                "default": 2,
-                "description": "Pixel-ratio multiplier applied when rasterising. Default: 2."
-              },
-              "theme": {
-                "type": "string",
-                "enum": ["light", "dark"],
-                "default": "light",
-                "description": "Colour scheme. Default: light."
-              },
-              "fontSize": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "default": 26,
-                "description": "Base body font size in px; headings and code derive from it. Default: 26."
-              },
-              "fontPath": {
-                "type": "string",
-                "description": "Absolute path to the text font (.ttf/.otf/.ttc). Auto-detected per platform when empty; without a CJK-capable font the reply is sent as text."
-              },
-              "boldFontPath": {
-                "type": "string",
-                "description": "Absolute path to the bold face. Auto-detected when empty; without one, bold renders at regular weight."
-              },
-              "maxChars": {
-                "type": "integer",
-                "exclusiveMinimum": 0,
-                "default": 8000,
-                "description": "Skip rendering (and send text) when the reply exceeds this many characters. Default: 8000."
-              }
-            }
-          },
           "tools": {
             "type": "object",
             "additionalProperties": false,
@@ -831,56 +781,6 @@
                       "exclusiveMinimum": 0,
                       "default": 10000,
                       "description": "Per-fetch timeout in milliseconds. Default: 10000."
-                    }
-                  }
-                },
-                "render": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "description": "Render digest and /summary replies as a PNG instead of text, falling back to text whenever an image cannot be produced.",
-                  "properties": {
-                    "enabled": {
-                      "type": "boolean",
-                      "default": true,
-                      "description": "Render digest / /summary replies as an image. Default: true."
-                    },
-                    "width": {
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "default": 720,
-                      "description": "Content width in CSS px, before scale. Default: 720."
-                    },
-                    "scale": {
-                      "type": "number",
-                      "exclusiveMinimum": 0,
-                      "default": 2,
-                      "description": "Pixel-ratio multiplier applied when rasterising. Default: 2."
-                    },
-                    "theme": {
-                      "type": "string",
-                      "enum": ["light", "dark"],
-                      "default": "light",
-                      "description": "Colour scheme. Default: light."
-                    },
-                    "fontSize": {
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "default": 26,
-                      "description": "Base body font size in px; headings and code derive from it. Default: 26."
-                    },
-                    "fontPath": {
-                      "type": "string",
-                      "description": "Absolute path to the text font (.ttf/.otf/.ttc). Auto-detected per platform when empty."
-                    },
-                    "boldFontPath": {
-                      "type": "string",
-                      "description": "Absolute path to the bold face. Auto-detected when empty; without one, bold renders at regular weight."
-                    },
-                    "maxChars": {
-                      "type": "integer",
-                      "exclusiveMinimum": 0,
-                      "default": 8000,
-                      "description": "Skip rendering (and send text) when the reply exceeds this many characters. Default: 8000."
                     }
                   }
                 },

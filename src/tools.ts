@@ -25,7 +25,7 @@ import { readNumberParam, readStringParam } from "./params.js";
 import { acquireActionClient as defaultAcquireActionClient } from "./client.js";
 import { resolveSnowLumaAccount } from "./config.js";
 import { formatTarget, parseTarget, type SendTarget } from "./outbound.js";
-import { renderSegments, toSegments } from "./segments.js";
+import { renderSegments, sanitizeDisplayName, toSegments } from "./segments.js";
 import type { ResolvedSnowLumaAccount, SnowLumaHostConfig } from "./types.js";
 
 /** Lets tests swap in a fake client acquisition without touching `./client.js`. */
@@ -102,8 +102,10 @@ function renderHistoryLine(entry: JsonObject): string {
   const sender = (entry as { sender?: unknown }).sender;
   const senderObj = sender && typeof sender === "object" ? (sender as JsonObject) : {};
   const qq = senderObj.user_id ?? (entry as { user_id?: unknown }).user_id ?? "?";
-  const nickname =
-    typeof senderObj.nickname === "string" && senderObj.nickname.trim() ? senderObj.nickname : String(qq);
+  // Flattened like every other agent-visible name: one line per entry, no
+  // matter what the nickname contains (see `sanitizeDisplayName`).
+  const rawNickname = typeof senderObj.nickname === "string" ? sanitizeDisplayName(senderObj.nickname) : "";
+  const nickname = rawNickname || String(qq);
   const rawMessage =
     typeof (entry as { raw_message?: unknown }).raw_message === "string"
       ? ((entry as { raw_message?: unknown }).raw_message as string)
@@ -113,8 +115,8 @@ function renderHistoryLine(entry: JsonObject): string {
 }
 
 function renderMemberLine(member: JsonObject): string {
-  const card = typeof member.card === "string" ? member.card.trim() : "";
-  const nickname = typeof member.nickname === "string" ? member.nickname.trim() : "";
+  const card = typeof member.card === "string" ? sanitizeDisplayName(member.card) : "";
+  const nickname = typeof member.nickname === "string" ? sanitizeDisplayName(member.nickname) : "";
   const name = card || nickname || "?";
   const qq = member.user_id ?? "?";
   const role = typeof member.role === "string" && member.role ? member.role : "member";

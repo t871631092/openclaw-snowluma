@@ -20,18 +20,15 @@
  */
 
 import type { SnowLumaApiClient } from "@snowluma/sdk";
-import { rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import type { AggregatedBatch } from "./aggregator.js";
 import { OPENCLAW_EMPTY_INPUT_NOTICE, sendMedia as defaultSendMedia, sendText as defaultSendText } from "./outbound.js";
+import { markdownToText } from "./markdown-text.js";
 import { formatQuoteContext, resolveQuoteContext as defaultResolveQuoteContext } from "./quote.js";
 import type { QuoteDeps } from "./quote.js";
-import { renderMarkdownToPng as defaultRenderMarkdownToPng } from "./render.js";
 import { getSnowLumaRuntime } from "./runtime.js";
-import { renderSegments } from "./segments.js";
+import { renderSegments, sanitizeDisplayName } from "./segments.js";
 import { stripLeadingMention } from "./triggers.js";
 import type { NormalizedMessage, ResolvedQuote, ResolvedSnowLumaAccount } from "./types.js";
 
@@ -52,8 +49,6 @@ export interface DispatchDeps {
   resolveQuote?: (msg: NormalizedMessage, deps: QuoteDeps) => Promise<ResolvedQuote | null>;
   /** Defaults to `sendText`/`sendMedia` from ./outbound.js. */
   send?: { sendText: typeof defaultSendText; sendMedia: typeof defaultSendMedia };
-  /** Defaults to `renderMarkdownToPng` from ./render.js; injectable so tests need no fonts or WASM. */
-  renderImage?: typeof defaultRenderMarkdownToPng;
 }
 
 // ── Command authorization ───────────────────────────────────────────────
@@ -102,11 +97,42 @@ function renderMessageText(msg: NormalizedMessage): string {
 
 /** A `[HH:mm:ss] name(id): text` transcript line, shared by the digest and reply-history blocks. */
 function renderTranscriptLine(msg: NormalizedMessage): string {
-  return `[${formatHHMMSS(msg.time)}] ${msg.senderName}(${msg.senderId}): ${renderMessageText(msg)}`;
+  const name = sanitizeDisplayName(msg.senderName);
+  return `[${formatHHMMSS(msg.time)}] ${name}(${msg.senderId}): ${renderMessageText(msg)}`;
 }
 
 const HISTORY_HEADER = "【历史聊天记录（仅供参考上下文，请勿直接回复其中的旧消息）】";
 const HISTORY_FOOTER = "【以上为历史消息；请针对下面这条最新消息进行回复】";
+
+/** What `buildBatchBody` hands back to the dispatcher. */
+export interface ComposedBody {
+  body: string;
+  rawBody: string;
+  commandBody: string;
+  imageUrls: string[];
+  /**
+   * True when `body` already carries the current sender's "name (id): " label
+   * itself, so the caller must NOT also pass `sender` to the host envelope
+   * formatter (which would prefix the whole body a second time).
+   */
+  senderLabelInBody: boolean;
+}
+
+/**
+ * The host's own sender label ("name (id)", or whichever half is available),
+ * mirrored step for step from `resolveSenderLabel` + `sanitizeEnvelopeHeaderPart`
+ * so an in-body attribution is byte-identical to the one `formatInboundEnvelope`
+ * would have produced. That is deliberately NOT `renderTranscriptLine`'s
+ * `name(id)` shape: this label stands in for the host's prefix, so the current
+ * message has to look the same to the agent whether or not a history block
+ * pushed the attribution into the body.
+ */
+function renderSenderLabel(name: string, id: number): string {
+  const display = name.trim();
+  const idPart = String(id).trim();
+  const label = display && idPart && display !== idPart ? `${display} (${idPart})` : display || idPart;
+  return sanitizeDisplayName(label);
+}
 
 /**
  * Render the peer's accumulated reply-history buffer into a transcript block,
@@ -130,7 +156,7 @@ function buildRealtimeBody(
   batch: AggregatedBatch,
   account: ResolvedSnowLumaAccount,
   quoteText: string,
-): { body: string; rawBody: string; commandBody: string; imageUrls: string[] } {
+): ComposedBody {
   const joined = batch.messages.map(renderMessageText).join("\n");
   // "Leading" is singular and applies once, to the front of the whole batch —
   // only the message that opened the window can plausibly start with "@bot".
@@ -140,11 +166,26 @@ function buildRealtimeBody(
   // `rawBody`/`commandBody`, so the command parser still sees just the user's
   // actual input, not the surrounding history.
   const historyText = renderHistoryReference(batch.history, account);
-  const body = historyText
-    ? `${HISTORY_HEADER}\n${historyText}\n${HISTORY_FOOTER}\n${currentBlock}`
-    : currentBlock;
   const imageUrls = batch.messages.flatMap((m) => m.imageUrls);
-  return { body, rawBody: text, commandBody: text, imageUrls };
+  if (!historyText) {
+    return { body: currentBlock, rawBody: text, commandBody: text, imageUrls, senderLabelInBody: false };
+  }
+
+  // In a group the host prefixes the *whole* body with "name (id): ". With a
+  // history block in front, that attribution lands on the transcript header and
+  // the turn reads as if the current sender said every historical line. Attach
+  // the label to the current message ourselves instead, and let the caller drop
+  // the host-level prefix. (Direct chats get no such prefix — nothing to move.)
+  const last = batch.messages[batch.messages.length - 1]!;
+  const label = batch.peerKind === "group" ? renderSenderLabel(last.senderName, last.senderId) : "";
+  const attributed = label ? `${label}: ${currentBlock}` : currentBlock;
+  return {
+    body: `${HISTORY_HEADER}\n${historyText}\n${HISTORY_FOOTER}\n${attributed}`,
+    rawBody: text,
+    commandBody: text,
+    imageUrls,
+    senderLabelInBody: label.length > 0,
+  };
 }
 
 /**
@@ -156,7 +197,7 @@ function buildTranscriptBody(
   batch: AggregatedBatch,
   prompt: string,
   maxTranscriptChars: number,
-): { body: string; rawBody: string; commandBody: string; imageUrls: string[] } {
+): ComposedBody {
   const lines = batch.messages.map(renderTranscriptLine);
   // The aggregator already trims its buffer against `maxTranscriptChars`, but
   // that budget is measured on raw message text — the rendered
@@ -175,7 +216,7 @@ function buildTranscriptBody(
   // empty CommandBody/RawBody means there is no text for the command parser to
   // even look at, on top of CommandAuthorized always being false. (The
   // transcript itself may well contain a line that reads like "/reset".)
-  return { body, rawBody: "", commandBody: "", imageUrls: [] };
+  return { body, rawBody: "", commandBody: "", imageUrls: [], senderLabelInBody: false };
 }
 
 /** Compose the agent-visible text for a batch (quote context, transcript, media placeholders). */
@@ -183,7 +224,7 @@ export function buildBatchBody(
   batch: AggregatedBatch,
   account: ResolvedSnowLumaAccount,
   quoteText: string,
-): { body: string; rawBody: string; commandBody: string; imageUrls: string[] } {
+): ComposedBody {
   if (batch.kind === "digest") {
     const { prompt, maxTranscriptChars } = account.receive.digest;
     return buildTranscriptBody(batch, prompt, maxTranscriptChars);
@@ -204,6 +245,22 @@ function findQuoteSource(messages: NormalizedMessage[]): NormalizedMessage | und
   return undefined;
 }
 
+/**
+ * Does a digest reply mean "nothing worth reporting"? The prompt asks for a
+ * bare `SKIP`, but a model that dresses it up (`**SKIP**`, `## SKIP`,
+ * `- skip`) means exactly the same thing. Emphasis is already gone by the time
+ * this runs — the reply has been flattened — so all that is left to peel off is
+ * the decoration `markdown-text.ts` itself adds for headings and list items.
+ */
+function isDigestSkip(text: string): boolean {
+  const bare = text
+    .trim()
+    .replace(/^[•◦·｜]\s*/, "")
+    .replace(/^【([\s\S]*)】$/, "$1")
+    .trim();
+  return bare.toUpperCase() === "SKIP";
+}
+
 // ── Dispatch ─────────────────────────────────────────────────────────────
 
 /**
@@ -221,7 +278,6 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
     const runtime = deps.runtime ?? getSnowLumaRuntime();
     const resolveQuote = deps.resolveQuote ?? defaultResolveQuoteContext;
     const send = deps.send ?? { sendText: defaultSendText, sendMedia: defaultSendMedia };
-    const renderImage = deps.renderImage ?? defaultRenderMarkdownToPng;
 
     // In debug mode, every outbound send records its raw payload. Emitted at
     // `info` level so it is actually visible when the operator flips the flag on.
@@ -289,7 +345,15 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
       // normalized away and the header part is dropped entirely.
       ...(isSummarisation
         ? { from: "" }
-        : { from: last.senderName, sender: { id: String(last.senderId), name: last.senderName } }),
+        : {
+            from: last.senderName,
+            // `composed.body` already carries the label when a history block
+            // pushed it away from the front (see `buildRealtimeBody`); passing
+            // `sender` too would re-prefix the whole body, transcript included.
+            ...(composed.senderLabelInBody
+              ? {}
+              : { sender: { id: String(last.senderId), name: last.senderName } }),
+          }),
       timestamp: origin.time * 1000,
       body: composed.body,
       chatType: batch.peerKind,
@@ -346,37 +410,6 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
     const messagesConfig = runtime.channel.reply.resolveEffectiveMessagesConfig(cfg, route.agentId);
 
-    /**
-     * Render `markdown` and send it as a QQ image. Returns false when the image
-     * could not be produced or could not be sent, so the caller can fall back
-     * to text — a summary must always arrive in some form.
-     */
-    const deliverAsImage = async (markdown: string, replyToId: number | undefined): Promise<boolean> => {
-      if (!account.render.enabled) return false;
-
-      const png = await renderImage(markdown, account.render, log);
-      if (!png) return false;
-
-      // SnowLuma reads the image back off disk (the segment carries a file://
-      // URI), so it has to exist as a real file for the duration of the send.
-      const file = join(
-        tmpdir(),
-        `snowluma-${account.accountId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`,
-      );
-      try {
-        await writeFile(file, png);
-        await send.sendMedia({ client, to: address, mediaPath: file, replyToId, debug: outboundDebug });
-        runtime.channel.activity.record({ channel: "snowluma", accountId: account.accountId, direction: "outbound" });
-        return true;
-      } catch (err) {
-        log?.error?.(`[snowluma:${account.accountId}] summary image send failed (${String(err)}) — falling back to text`);
-        return false;
-      } finally {
-        // Best-effort: a leftover temp file is harmless, a throw here would not be.
-        await rm(file, { force: true }).catch(() => {});
-      }
-    };
-
     const sendErrorNotice = async (errorText: string) => {
       try {
         await send.sendText({ client, to: address, text: errorText, chunkLimit: account.textChunkLimit, debug: outboundDebug });
@@ -402,11 +435,20 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
             return;
           }
 
-          if (batch.kind === "digest") {
-            if (trimmed.toUpperCase() === "SKIP") {
-              log?.info?.(`[snowluma:${account.accountId}] digest reply was SKIP — nothing sent`);
-              return;
-            }
+          const replyText = payload.text ?? "";
+          // A summarisation reply is long structured Markdown, and QQ renders
+          // none of it — `## 今日总结` / `**周四**` would arrive with the syntax
+          // showing. Flatten it to chat-readable text first. Realtime replies
+          // are short and conversational, so they go out untouched.
+          const outgoingText = isSummarisation ? markdownToText(replyText) : replyText;
+
+          // Checked on the FLATTENED text, before anything is sent: a model that
+          // decorates its refusal (`**SKIP**`) would slip past a raw comparison
+          // and then flatten right back to "SKIP" on the way out — i.e. the
+          // digest that meant "nothing to report" posts the word to the group.
+          if (batch.kind === "digest" && isDigestSkip(outgoingText)) {
+            log?.info?.(`[snowluma:${account.accountId}] digest reply was SKIP — nothing sent`);
+            return;
           }
 
           const mediaPaths: string[] = [];
@@ -421,43 +463,38 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
             }
           }
 
-          const replyText = payload.text ?? "";
-          if (replyText.trim()) {
-            // A digest has nothing to quote-reply to; a realtime turn quotes
-            // the message that opened the window, and a `/summary` turn
-            // quotes the command itself.
-            const replyToId = account.replyToTrigger
-              ? batch.kind === "realtime"
-                ? first.messageId
-                : batch.commandMessage?.messageId
-              : undefined;
+          // A media-only payload is legitimate — the images went out above.
+          if (!replyText.trim()) return;
+          if (!outgoingText.trim()) {
+            log?.info?.(`[snowluma:${account.accountId}] reply was empty after markdown flattening — nothing sent`);
+            return;
+          }
 
-            // Summarisation replies are long structured Markdown, which a QQ
-            // text bubble flattens into an unreadable wall — render them to an
-            // image instead. `deliverAsImage` returns false for every failure
-            // mode (disabled, no font, packages missing, render error), which
-            // falls through to the plain-text send below.
-            if (isSummarisation && (await deliverAsImage(replyText, replyToId))) {
-              return;
-            }
+          // A digest has nothing to quote-reply to; a realtime turn quotes the
+          // message that opened the window, and a `/summary` turn quotes the
+          // command itself.
+          const replyToId = account.replyToTrigger
+            ? batch.kind === "realtime"
+              ? first.messageId
+              : batch.commandMessage?.messageId
+            : undefined;
 
-            try {
-              await send.sendText({
-                client,
-                to: address,
-                text: replyText,
-                replyToId,
-                chunkLimit: account.textChunkLimit,
-                debug: outboundDebug,
-              });
-              runtime.channel.activity.record({
-                channel: "snowluma",
-                accountId: account.accountId,
-                direction: "outbound",
-              });
-            } catch (err) {
-              log?.error?.(`[snowluma:${account.accountId}] send failed: ${String(err)}`);
-            }
+          try {
+            await send.sendText({
+              client,
+              to: address,
+              text: outgoingText,
+              replyToId,
+              chunkLimit: account.textChunkLimit,
+              debug: outboundDebug,
+            });
+            runtime.channel.activity.record({
+              channel: "snowluma",
+              accountId: account.accountId,
+              direction: "outbound",
+            });
+          } catch (err) {
+            log?.error?.(`[snowluma:${account.accountId}] send failed: ${String(err)}`);
           }
         },
         onError: async (err) => {

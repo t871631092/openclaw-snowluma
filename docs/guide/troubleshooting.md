@@ -33,7 +33,7 @@
 2. 确认目标聊天落在 `scope`（`"group"` / `"direct"` / `"all"`）与 `peers` 白名单范围内（`peers` 为空表示 `scope` 内全部观察，不是"不限制到不检查 scope"，两个条件是 AND 关系）。
 3. **最容易踩的坑是 `minMessages`**：`intervalMs` 到期时，如果缓冲的消息数还没达到 `minMessages`，flush 会被持续抑制——窗口不会清空，只会不断重新排下一个 `intervalMs` 周期的计时器，行为上看起来就是"从来不触发"，但其实是在正常地"抑制-重试"（详见[三种接收模式 · digest](/guide/receive-modes#digest-定时或达到消息数后自动归纳)）。适当调低 `minMessages`，或确认这个聊天的活跃度确实能在一个 `intervalMs` 周期内产生 `minMessages` 条消息。
 4. 确认这个聊天没有被 `allowFrom`/`denyFrom` 挡在门外——`isPeerAllowed` 检查发生在 `evaluateTrigger`/`aggregator.accept` **之前**，被拒绝的来源连 digest 缓冲区都进不去。
-5. 如果窗口确实 flush 了，但群里什么都没收到：检查 Agent 的回复是不是恰好等于 `SKIP`（大小写不敏感，裁剪首尾空白后比较）——这种情况下插件按设计**不会**发送任何消息，属于正常路径而非故障。
+5. 如果窗口确实 flush 了，但群里什么都没收到：检查 Agent 的回复是不是就是 `SKIP`——比较在 Markdown 拍平**之后**做，大小写不敏感，并会剥掉标题/列表这层装饰，所以 `**SKIP**`、`## SKIP`、`- skip` 一律算作 SKIP。这种情况下插件按设计**不会**发送任何消息，属于正常路径而非故障。
 
 ## `/summary` 没反应 {#summary-没反应}
 
@@ -42,16 +42,16 @@
 3. 确认这个聊天没被 `allowFrom`/`denyFrom` 挡住——这道检查在命令匹配**之前**。
 4. 如果收到的是「获取最近聊天记录失败」或「最近没有可以总结的聊天记录」，说明命令已经生效，问题出在 SnowLuma 的历史消息接口：确认后端实现了 `get_group_msg_history` / `get_friend_msg_history`，且机器人在该群里有读取权限。
 
-## 总结发出来是文字，不是图片 {#总结发出来是文字不是图片}
+## 升级到 0.5.0：`render` 配置项已移除 {#升级-050-render-已移除}
 
-图片渲染在任何一步失败都会**自动回退纯文本**，所以先看日志里的 `[snowluma:render]` 行，它会直接说明原因：
+0.4.x 会把 digest / `/summary` 的总结渲染成 PNG 发送，0.5.0 起改为**发送拍平后的纯文本**（规则见[接收模式 · 回复以纯文本发出](/guide/receive-modes#summary-summary-主动总结命令)），`marked` / `satori` / `@resvg/resvg-wasm` 三个依赖一并去掉。
 
-- `image rendering unavailable (Cannot find package 'satori')` —— 插件是在这个功能之前安装的，依赖不在安装目录里。重装插件即可（`satori` / `@resvg/resvg-wasm` / `marked` 都是纯 JS/WASM，不需要安装脚本）。
-- `no usable font found` —— 主机上没有能被解析的中文字体。Linux 上装 `fonts-noto-cjk`，或把 `render.fontPath` 指向一个具体的 `.ttf`/`.otf`。
-- `reply is N chars (> maxChars ...)` —— 回复太长，按配置直接走文本。调大 `render.maxChars` 即可。
-- 完全没有 `[snowluma:render]` 日志 —— `render.enabled` 是 `false`，或者这是一次 realtime 普通回复（普通对话永远走纯文本）。
+因此 `channels.snowluma.render`（以及 `accounts.<id>.render`）**整块不再有任何作用**：
 
-中文渲染成方块的情况不会出现：satori 把文字转成矢量路径后再光栅化，字体只在渲染阶段用一次，所以要么正常出图，要么明确回退文本。
+- 运行时会直接忽略它，不会报错、不会影响插件加载；
+- 但账号配置的 JSON Schema 声明了 `additionalProperties: false`，控制台的配置编辑器会把它标成未知字段。
+
+升级后把 `render` 整段从配置里删掉即可，没有替代项需要填。
 
 ## `ERR_MODULE_NOT_FOUND`，报错路径指向 `@snowluma/sdk` {#err-module-not-found}
 

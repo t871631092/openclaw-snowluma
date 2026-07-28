@@ -7,7 +7,6 @@ import {
 import type {
   ResolvedQuoteConfig,
   ResolvedReceiveConfig,
-  ResolvedRenderConfig,
   ResolvedSnowLumaAccount,
   SnowLumaAccountConfig,
   SnowLumaChannelConfig,
@@ -74,18 +73,6 @@ export const RECEIVE_DEFAULTS: ResolvedReceiveConfig = {
     maxChars: 4_000,
     maxAgeMs: 0,
   },
-};
-
-export const RENDER_DEFAULTS: ResolvedRenderConfig = {
-  enabled: true,
-  width: 720,
-  scale: 2,
-  theme: "light",
-  fontSize: 26,
-  // Empty means "probe the platform's own fonts" — see src/render.ts.
-  fontPath: "",
-  boldFontPath: "",
-  maxChars: 8_000,
 };
 
 export const QUOTE_DEFAULTS: ResolvedQuoteConfig = {
@@ -227,29 +214,6 @@ function resolveQuote(raw: SnowLumaAccountConfig["quote"]): ResolvedQuoteConfig 
   };
 }
 
-function trimmedString(value: unknown, fallback: string): string {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-function resolveRender(raw: SnowLumaAccountConfig["render"]): ResolvedRenderConfig {
-  const render = raw ?? {};
-  const theme = render.theme;
-  return {
-    enabled: bool(render.enabled, RENDER_DEFAULTS.enabled),
-    width: positiveInt(render.width, RENDER_DEFAULTS.width),
-    // Not `positiveInt`: a fractional pixel ratio (1.5) is meaningful here.
-    scale:
-      typeof render.scale === "number" && Number.isFinite(render.scale) && render.scale > 0
-        ? render.scale
-        : RENDER_DEFAULTS.scale,
-    theme: theme === "dark" ? "dark" : RENDER_DEFAULTS.theme,
-    fontSize: positiveInt(render.fontSize, RENDER_DEFAULTS.fontSize),
-    fontPath: trimmedString(render.fontPath, RENDER_DEFAULTS.fontPath),
-    boldFontPath: trimmedString(render.boldFontPath, RENDER_DEFAULTS.boldFontPath),
-    maxChars: positiveInt(render.maxChars, RENDER_DEFAULTS.maxChars),
-  };
-}
-
 function resolveSelfId(value: unknown): number | undefined {
   if (value == null || value === "") return undefined;
   const parsed = Number(value);
@@ -333,7 +297,6 @@ export function resolveSnowLumaAccount(
     },
     receive: resolveReceive(accountConfig.receive),
     quote: resolveQuote(accountConfig.quote),
-    render: resolveRender(accountConfig.render),
     toolsEnabled: bool(accountConfig.tools?.enabled, true),
     config: accountConfig,
   };

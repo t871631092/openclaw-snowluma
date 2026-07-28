@@ -148,7 +148,7 @@ aggregator.accept(msg, decision)  ── 同一条消息，同时喂给下面两
 
 ### flush 时发生什么
 
-flush 时，`buildDigestBody()`（`src/dispatch.ts`）把 `prompt` 和渲染成 `[HH:mm:ss] 昵称(qq): 文本` 逐行格式的聊天记录拼在一起（进一步按 `maxTranscriptChars` 从最旧的一端裁剪），作为一次性的 Agent 调用发出去。如果 Agent 的最终回复裁剪首尾空白后**恰好等于 `SKIP`**（大小写不敏感），插件不会发送任何消息——这是"这段时间没什么好总结的"的正常路径，不是错误。
+flush 时，`buildDigestBody()`（`src/dispatch.ts`）把 `prompt` 和渲染成 `[HH:mm:ss] 昵称(qq): 文本` 逐行格式的聊天记录拼在一起（进一步按 `maxTranscriptChars` 从最旧的一端裁剪），作为一次性的 Agent 调用发出去。如果 Agent 的最终回复**就是 `SKIP`**（大小写不敏感；比较在 Markdown 拍平之后做，并会剥掉标题/列表装饰，所以 `**SKIP**`、`## SKIP`、`- skip` 同样算数），插件不会发送任何消息——这是"这段时间没什么好总结的"的正常路径，不是错误。
 
 **摘要轮次永远不会被授权执行文本命令**（`/status`、`/model` 等）：`dispatchBatch` 里 `batch.kind === "digest"` 时 `CommandAuthorized` 被硬编码为 `false`，`CommandSource` 字段整个被省略（而不是设为 `false`），`CommandBody`/`RawBody` 也都是空字符串——即使触发这条消息的 peer 已经在 `allowFrom` 白名单里，摘要文本本身也不会被当作命令解析，防止群聊消息通过摘要转发实现指令注入。
 
@@ -215,14 +215,22 @@ flush 时，`buildDigestBody()`（`src/dispatch.ts`）把 `prompt` 和渲染成 
 - **归属到发命令的人**：`SenderId`/`SenderName`/`MessageSid` 取命令那条消息，`replyToTrigger: true` 时回复以引用命令消息的形式发出。
 - **拉不到内容时会明说**：历史接口报错回 `获取最近聊天记录失败：<原因>`，一条都没有回 `最近没有可以总结的聊天记录。`——两种情况都不会调用 Agent。
 
-### 回复默认是一张图片
+### 回复以纯文本发出
 
-digest 和 `/summary` 的回复通常是带标题、分点、代码块的长 Markdown，塞进 QQ 文本气泡会被压成一坨。所以这两类回复默认**渲染成 PNG 发送**（`render.enabled: true`，见[配置参考 · render](/guide/configuration#render-把总结渲染成图片)）：
+digest 和 `/summary` 的回复通常是带标题、分点、代码块的 Markdown，而 **QQ 不渲染任何标记** —— 直接发出去会看到 `## 今日总结`、`**周四**` 这样的原始符号。所以这两类回复在发送前会先经过 `markdown-text.ts` 拍平：
 
-- 渲染链路 `marked` → `satori` → `@resvg/resvg-wasm`，纯 JS/WASM，不需要浏览器、不需要原生二进制。
-- 图片仍然以引用回复的形式挂在 `/summary` 命令那条消息上（`replyToTrigger: true` 时）。
-- **任何一步失败都自动回退纯文本**：包没装、找不到中文字体、渲染或发送报错、内容超过 `maxChars`——都只是退回文本，不会让总结丢失。
-- 普通对话回复（realtime）永远是纯文本，不受这个开关影响。
+| Markdown | QQ 里看到的 |
+|---|---|
+| `## 关键结论` | `【关键结论】` |
+| `- 待办` / 嵌套 | `• 待办` / `◦` / `·` |
+| `- [x] 已完成` | `• ✅ 已完成` |
+| `**加粗**`、`` `代码` `` | 去掉符号，保留文字 |
+| `[清单](https://…)` | `清单（https://…）` |
+| `> 引用` | `｜ 引用` |
+| `---` | `————————` |
+| 代码块 | 去掉围栏，内容原样保留 |
+
+普通对话回复（realtime）短、口语化，不做处理，原样发出。
 
 **总结轮次同样永远不会被授权执行文本命令**：`dispatchBatch` 里凡是 `batch.kind !== "realtime"` 的批次，`CommandAuthorized` 都硬编码为 `false`、`CommandSource` 整个省略、`CommandBody`/`RawBody` 都是空字符串。用户授权的是"做一份总结"，不是"执行聊天记录里碰巧长得像命令的那一行"。
 
@@ -308,6 +316,7 @@ digest 和 `/summary` 的回复通常是带标题、分点、代码块的长 Mar
 
 - **累积**：`acceptHistory()` 对每条消息都追加进该会话的缓冲区，并按 `maxMessages`（条数）和 `maxChars`（总字符数）从最旧的一端裁剪。这个引擎不看 `TriggerDecision`，也不开计时器——它只是攒着。
 - **带入**：当这个会话产生一次 realtime 回复（`flushRealtimeWindow` 或 `realtime.enabled: false` 下的 `immediate` 立即 flush）时，`takeHistoryForReply()` 把缓冲区里**除本批 `messages` 之外**的历史消息快照出来，挂到 `batch.history` 上；`buildRealtimeBody()`（`src/dispatch.ts`）再把它渲染成 `[HH:mm:ss] 昵称(qq): 文本` 的转录块，夹在 `【历史聊天记录…】`／`【以上为历史消息…】` 两行提示之间，**只拼进 Agent 可见的 `body`**——`rawBody`/`commandBody` 保持只有用户本条输入，命令解析器因此永远只看到真正的输入、看不到历史。
+- **发言人归属**：群聊里宿主的 `formatInboundEnvelope` 会在**整个 `body` 最前面**加一句 `昵称 (qq): ` 前缀；一旦前面还夹着历史转录块，这个前缀就会落到 `【历史聊天记录…】` 那一行上，读起来像是"这位用户把整段历史都说了一遍"。所以带历史时 `buildRealtimeBody()` 自己把 `昵称 (qq): ` 挂在**紧跟 `【以上为历史消息…】` 之后的当前消息**上，`dispatch.ts` 相应地不再向宿主传 `sender`（信封头部的 `from` 仍保留发言人昵称）。私聊本来就没有这个前缀，因此不做处理。QQ 昵称是用户可控的自由文本，因此不管出现在转录行还是这个标签里，都会先过一遍与宿主 `sanitizeEnvelopeHeaderPart` 相同的清洗（换行折成空格、`[]` 折成 `()`），否则一个带换行的昵称就能在提示词里凭空多出一行、伪造成别人说的话。
 - **清空**：快照的同一时刻缓冲区被清空（drain-on-consume）。因为攒下的内容此刻已经交给了 Agent（要么作为历史、要么作为本批消息），而 Agent 自身的会话记忆会从这里接续上下文，再留着只会在下次回复时重复发送、白白浪费 token。
 
 `maxAgeMs` 默认 `0`（不按时间丢弃，只受条数/字符数约束）；设为正值时，带入那一刻会按消息的 QQ 时间戳丢掉早于该时长的旧消息，避免把很久以前的聊天当成"当前上下文"。`enabled: false` 时整个引擎被跳过：不累积、不带入，`batch.history` 恒为空。

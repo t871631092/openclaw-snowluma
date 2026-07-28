@@ -111,23 +111,14 @@ function collectRuntimeBareImports(entry: string): BareImportHit[] {
  * The only bare packages the entry graphs may reach at runtime, mapped to the
  * single module allowed to `import()` each one.
  *
- * All of them are deferred for the same reason (the gateway installs with
- * `--ignore-scripts` and controls which dependencies exist), but they earn
- * their place differently:
- *
- * - `@snowluma/sdk` — MUST be dynamic: its published build needs the ESM
- *   specifier patch in `src/sdk.ts` to run before the import is even linked.
- * - `satori` / `@resvg/resvg-wasm` / `marked` — the Markdown→PNG stack behind
- *   `render.ts`. Chosen because all three are pure JS/WASM with no install
- *   hooks and no native binaries, so a bare manifest install always yields a
- *   working copy; deferred so that an older install that predates the feature
- *   degrades to text replies instead of failing to load the plugin.
+ * `@snowluma/sdk` MUST be dynamic: its published build needs the ESM specifier
+ * patch in `src/sdk.ts` to run before the import is even linked. Any future
+ * addition has to clear the same bar — the gateway installs with
+ * `--ignore-scripts` and controls which dependencies exist, so a package that
+ * needs an install hook or a downloaded binary cannot be relied on at all.
  */
 const DEFERRED_PACKAGES: Record<string, string> = {
   "@snowluma/sdk": "src/sdk.ts",
-  satori: "src/render.ts",
-  "@resvg/resvg-wasm": "src/render.ts",
-  marked: "src/render.ts",
 };
 
 const formatHits = (hits: BareImportHit[]): string =>

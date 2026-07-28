@@ -27,9 +27,9 @@ runtime, delivers the reply) → `outbound.ts` (send back to QQ). One branch ski
 `/summary` command is intercepted in `gateway.ts` by `summary.ts`, which fetches its own transcript
 from SnowLuma and hands `dispatch.ts` a `kind: "summary"` batch directly.
 
-Outbound, summarisation replies (`digest` + `summary`) take a second detour: `dispatch.ts` renders the
-agent's Markdown to a PNG via `render.ts` (→ `markdown-layout.ts`) and sends that image instead of
-text, falling back to text on any failure. Realtime replies are always plain text.
+Outbound, summarisation replies (`digest` + `summary`) pass through `markdown-text.ts` first: QQ renders
+no markup, so the agent's Markdown is flattened to chat-readable plain text before `outbound.ts` sends
+it. Realtime replies are short and conversational and go out untouched.
 
 `src/*.ts`, one line each:
 
@@ -39,12 +39,11 @@ text, falling back to text on any failure. Realtime replies are always plain tex
 | `config.ts` | Resolves raw `channels.snowluma` config into a `ResolvedSnowLumaAccount` with every default applied; env fallback (default account only); `isPeerAllowed`. |
 | `env.ts` | The only place that reads `process.env` (`SNOWLUMA_*`). |
 | `client.ts` | Builds `SnowLumaWebSocketClient`/`SnowLumaHttpClient` from a resolved account; the action-client registry the gateway publishes its live socket into. |
-| `segments.ts` | Normalizes raw OneBot message payloads (array/CQ-string/plain-string) into `SnowLumaMessageSegment[]` / `NormalizedMessage`; renders segments back to display text. |
+| `segments.ts` | Normalizes raw OneBot message payloads (array/CQ-string/plain-string) into `SnowLumaMessageSegment[]` / `NormalizedMessage`; renders segments back to display text; owns `sanitizeDisplayName`, the one flattener every agent-visible nickname passes through. |
 | `triggers.ts` | Pure decision logic: `evaluateTrigger` (mention/keyword/direct/reply-to-self), no I/O. |
 | `aggregator.ts` | Three independent engines sharing one `accept()` entry point: realtime coalescing, digest summarisation, and a rolling reply-history buffer (drained into a realtime batch's `history` on flush). Timers are injected. |
 | `summary.ts` | The on-demand `/summary` command: `matchSummaryCommand` (pure) + `runSummaryCommand`, which fetches the peer's recent history via `get_group_msg_history`/`get_friend_msg_history` and dispatches a `kind: "summary"` batch. Bypasses the aggregator entirely. |
-| `markdown-layout.ts` | Pure: `marked` token tree → satori element tree (`{type, props}` objects). No runtime deps — testable as plain data. |
-| `render.ts` | Markdown → PNG for summarisation replies: lazy-loads `marked`/`satori`/`@resvg/resvg-wasm`, resolves a CJK font (config path or per-platform probe), returns `null` on every failure so callers fall back to text. |
+| `markdown-text.ts` | Pure, dependency-free Markdown → plain text for QQ (headings → 【…】, bullets → •, emphasis/backticks stripped, link targets kept). Applied to summarisation replies only. |
 | `quote.ts` | Actively resolves quoted/forwarded messages via `get_msg`/`get_forward_msg`, with depth/node/char budgets. |
 | `dispatch.ts` | Turns one `AggregatedBatch` into a single agent turn via `pluginRuntime.channel.*`, then delivers the reply back to QQ. |
 | `gateway.ts` | Owns one long-lived connection per account; wires client events → triggers → aggregator → dispatch; tracks self-sent message ids. |
@@ -78,6 +77,21 @@ text, falling back to text on any failure. Realtime replies are always plain tex
   `CommandAuthorized: false` and omits `CommandSource` entirely for every `batch.kind !== "realtime"`,
   regardless of `allowFrom`. `/summary` is no exception: the user authorized a summary, not whatever the
   fetched transcript happens to contain. Do not special-case this away.
+- **Every display name that goes into an agent-visible body goes through `sanitizeDisplayName`
+  (`segments.ts`), and the host must never prefix a body that already carries its own attribution.**
+  Two halves of one rule about who-said-what in the prompt. (1) Nicknames/group cards are free-form
+  remote text; raw, a newline in one opens a line of its own inside a transcript, a `[引用 …]` block, or
+  the current-message label, which the agent then reads as a separate message from someone else.
+  `renderTranscriptLine`/`renderSenderLabel` (`dispatch.ts`), `formatWho` (`quote.ts`), the `@name` in
+  `renderSegments` (`segments.ts`) and both tool renderers (`tools.ts`) all flatten first — message TEXT
+  stays verbatim, only names are structural. The `@name` case is the easiest to miss and the cheapest to
+  exploit: a member's card reaches a transcript the moment SOMEONE ELSE @-mentions them. (2) In a group the host's
+  `formatInboundEnvelope` prefixes the WHOLE body with `name (id): `, which with a history block in
+  front lands on 【历史聊天记录…】. So `buildRealtimeBody` attaches that label to the current message
+  itself and sets `ComposedBody.senderLabelInBody`, on which `dispatch.ts` drops `sender` from the
+  envelope call (`from` stays, for the header). The flag is safe to trust because `renderSenderLabel`
+  mirrors the host's `resolveSenderLabel` + `sanitizeEnvelopeHeaderPart` step for step: an empty label
+  means the host would also have produced none.
 - **Neither entry's runtime module graph (`index.js` *and* `setup-entry.js`) may import anything from
   `openclaw/*`.** OpenClaw's loader synchronously `require()`s BOTH entries while also asynchronously
   `import()`ing them; if a sync require touches an `openclaw/plugin-sdk/*` module that the async import
@@ -101,14 +115,6 @@ text, falling back to text on any failure. Realtime replies are always plain tex
   values from `getSnowLumaSdk()`; and `typebox` is type-only (tools.ts ships plain JSON Schema
   literals). `test/load-graph.test.ts` enforces all of this for both entry graphs. (History:
   `Cannot find module 'typebox'` up to 0.1.3; fixed structurally in 0.1.4.)
-- **A new runtime dependency must survive `--ignore-scripts`, and must be deferred.** Anything with a
-  `postinstall`/`install` hook or a downloaded binary (stock `puppeteer`, `node-html-to-image`) is
-  unusable on a gateway: the download never runs. The Markdown→PNG stack (`marked`, `satori`,
-  `@resvg/resvg-wasm`) was chosen on exactly that criterion — all three are pure JS/WASM with no
-  install hooks and no native binaries, so a bare manifest install always yields a working copy. They
-  are still loaded only through `import()` inside `src/render.ts`, so an older install that predates
-  the feature degrades to text replies instead of failing to load the plugin. `DEFERRED_PACKAGES` in
-  `test/load-graph.test.ts` is the allowlist; adding a package means adding it there, with its loader.
 - **The control-UI config editor reads its schema from the MANIFEST, and that schema may not use
   `$ref`.** The gateway (verified against openclaw 2026.7.1) builds its `config.schema` response for
   `channels.snowluma` from `openclaw.plugin.json` → `channelConfigs.snowluma.{schema,uiHints}` via the
@@ -148,6 +154,11 @@ build** — this is a workaround for a bug in `@snowluma/sdk`, not a permanent p
 - `test/helpers/mock-runtime.ts` (`createMockRuntime`) is the hand-written `PluginRuntime` double used by
   `dispatch.test.ts` — it implements exactly the `pluginRuntime.channel.{activity,routing,reply,commands}`
   surface `dispatch.ts` calls, and exposes `state.last*Args` for assertions.
+- The "no `openclaw` runtime imports" rule is about the two ENTRY GRAPHS, not the test suite — a test may
+  import openclaw for real. `dispatch.test.ts` does exactly that (`openclaw/plugin-sdk/channel-envelope`)
+  for one regression: `createMockRuntime`'s `formatInboundEnvelope` returns `args.body` verbatim, so it
+  cannot observe the host's own "name (id): " body prefix, and only the real formatter can prove that
+  prefix no longer lands on the history block.
 
 ## Reference material
 

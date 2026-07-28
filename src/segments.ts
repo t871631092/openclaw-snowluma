@@ -152,6 +152,27 @@ const PLACEHOLDERS: Record<string, string> = {
 };
 
 /**
+ * Flatten a display name to a single safe line, mirroring the host's
+ * `sanitizeEnvelopeHeaderPart`.
+ *
+ * Every nickname/group card we put into an agent-visible body is free-form text
+ * chosen by a remote user: `dispatch.ts` uses them for transcript lines and the
+ * current-message label, `quote.ts` for the `[引用 …]` header and its forward
+ * nodes. Left raw, a nickname containing a newline opens a brand-new line in
+ * those blocks — one the agent reads as a separate message from someone else,
+ * including after the "reply to this one" footer. Brackets fold to parentheses
+ * so a name cannot imitate our own `[HH:mm:ss]`/`[图片]`/`[引用 …]` markers.
+ */
+export function sanitizeDisplayName(value: string): string {
+  return value
+    .replace(/\r\n|\r|\n/g, " ")
+    .replaceAll("[", "(")
+    .replaceAll("]", ")")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Human-readable rendering for the agent: text flows inline, `at` becomes
  * `@<name or qq>`, everything else collapses to a `[placeholder]`. `reply` is
  * intentionally omitted here — `quote.ts` actively resolves and injects that
@@ -164,8 +185,15 @@ export function renderSegments(segments: SnowLumaMessageSegment[]): string {
       const text = typeof seg.data.text === "string" ? seg.data.text : "";
       if (text) parts.push(text);
     } else if (seg.type === "at") {
-      const label = seg.data.qq === "all" ? "全体成员" : (firstNonEmpty(seg.data.name, seg.data.qq) ?? "");
-      parts.push(`@${label}`);
+      // `seg.data.name` is the mentioned member's group card — remote free-form
+      // text like every other display name, and it reaches the agent through
+      // the transcript lines this renders. Flatten it for the same reason
+      // `renderTranscriptLine` flattens the sender's own nickname: otherwise a
+      // card containing a newline forges a whole extra line in the transcript,
+      // and its owner never has to say a word to plant it — being @-mentioned
+      // once by someone else is enough.
+      const raw = seg.data.qq === "all" ? "全体成员" : (firstNonEmpty(seg.data.name, seg.data.qq) ?? "");
+      parts.push(`@${sanitizeDisplayName(raw)}`);
     } else if (seg.type === "reply") {
       continue;
     } else if (Object.hasOwn(PLACEHOLDERS, seg.type)) {

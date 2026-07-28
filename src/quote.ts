@@ -10,7 +10,7 @@
  */
 
 import type { SnowLumaApiClient } from "@snowluma/sdk";
-import { extractForwardIds, renderSegments, toSegments } from "./segments.js";
+import { extractForwardIds, renderSegments, sanitizeDisplayName, toSegments } from "./segments.js";
 import type {
   NormalizedMessage,
   ResolvedForwardNode,
@@ -250,8 +250,15 @@ function formatTime(unixSeconds: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/**
+ * `name(id)` for the quote header and each forward node. The name comes off the
+ * wire (`get_msg` / `get_forward_msg`), so it is flattened first — an unescaped
+ * newline in a nickname would otherwise start a line of its own inside the
+ * `[引用 …]` block and read as a separate quoted message.
+ */
 function formatWho(senderName: string | undefined, senderId: number | undefined): string {
-  if (senderName) return senderId !== undefined ? `${senderName}(${senderId})` : senderName;
+  const name = senderName ? sanitizeDisplayName(senderName) : "";
+  if (name) return senderId !== undefined ? `${name}(${senderId})` : name;
   return senderId !== undefined ? String(senderId) : "未知";
 }
 

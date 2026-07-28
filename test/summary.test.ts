@@ -7,11 +7,10 @@
  * with plain fakes.
  */
 import type { SnowLumaApiClient } from "@snowluma/sdk";
-import { existsSync } from "node:fs";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { describe, expect, it, vi } from "vitest";
 import type { AggregatedBatch } from "../src/aggregator.js";
-import { QUOTE_DEFAULTS, RECEIVE_DEFAULTS, RENDER_DEFAULTS, resolveSnowLumaAccount } from "../src/config.js";
+import { QUOTE_DEFAULTS, RECEIVE_DEFAULTS, resolveSnowLumaAccount } from "../src/config.js";
 import { buildBatchBody, dispatchBatch } from "../src/dispatch.js";
 import { matchSummaryCommand, runSummaryCommand } from "../src/summary.js";
 import type { NormalizedMessage, ResolvedReceiveConfig, ResolvedSnowLumaAccount } from "../src/types.js";
@@ -24,18 +23,13 @@ function cloneReceive(): ResolvedReceiveConfig {
 }
 
 function makeAccount(
-  overrides: Partial<Omit<ResolvedSnowLumaAccount, "receive" | "render">> & {
+  overrides: Partial<Omit<ResolvedSnowLumaAccount, "receive">> & {
     summary?: Partial<ResolvedReceiveConfig["summary"]>;
-    render?: Partial<ResolvedSnowLumaAccount["render"]>;
   } = {},
 ): ResolvedSnowLumaAccount {
-  const { summary, render: renderOverride, ...rest } = overrides;
+  const { summary, ...rest } = overrides;
   const receive = cloneReceive();
   if (summary) Object.assign(receive.summary, summary);
-  // Default OFF here so these tests exercise the text path deterministically —
-  // the real renderer depends on the host's installed fonts. The image path is
-  // covered below with an injected `renderImage`.
-  const render = { ...RENDER_DEFAULTS, enabled: false, ...renderOverride };
 
   return {
     accountId: "default",
@@ -51,7 +45,6 @@ function makeAccount(
     reconnect: { enabled: true, retries: Number.POSITIVE_INFINITY, minDelayMs: 1000, maxDelayMs: 30_000 },
     receive,
     quote: { ...QUOTE_DEFAULTS },
-    render,
     toolsEnabled: true,
     config: {},
     ...rest,
@@ -522,121 +515,11 @@ describe("dispatchBatch — summary batches", () => {
     expect(send.sendText).toHaveBeenCalledTimes(1);
   });
 
-  it("renders the reply to an image and sends that instead of text", async () => {
-    const { runtime, state } = createMockRuntime({ nextDeliverPayload: { text: "## 今日总结\n\n- 会议定在周四" } });
-    const send = { sendText: vi.fn(async () => ({ messageIds: [] })), sendMedia: vi.fn(async () => ({ messageIds: ["img"] })) };
-    const renderImage = vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
-
-    await dispatchBatch(summaryBatch(), {
-      account: makeAccount({ render: { enabled: true } }),
-      cfg,
-      client: makeClient(),
-      runtime: runtime as never,
-      send: send as never,
-      renderImage: renderImage as never,
+  it("flattens the reply's Markdown before sending (QQ renders none of it)", async () => {
+    const { runtime } = createMockRuntime({
+      nextDeliverPayload: { text: "## 今日总结\n\n- **周四** 发版\n- 见 `release.md`" },
     });
-
-    expect(renderImage).toHaveBeenCalledTimes(1);
-    expect(renderImage.mock.calls[0]![0]).toBe("## 今日总结\n\n- 会议定在周四");
-    expect(send.sendText).not.toHaveBeenCalled();
-    expect(send.sendMedia).toHaveBeenCalledTimes(1);
-    const params = send.sendMedia.mock.calls[0]![0] as { mediaPath: string; replyToId?: number };
-    expect(params.mediaPath).toMatch(/\.png$/);
-    expect(params.replyToId).toBe(500);
-    // The image counts as the outbound activity for this turn.
-    expect(state.recordedActivity.filter((a) => a.direction === "outbound")).toHaveLength(1);
-  });
-
-  it("deletes the temp PNG once the send has completed", async () => {
-    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "总结内容" } });
-    let seenPath = "";
-    let existedDuringSend = false;
-    const send = {
-      sendText: vi.fn(async () => ({ messageIds: [] })),
-      sendMedia: vi.fn(async (p: { mediaPath: string }) => {
-        seenPath = p.mediaPath;
-        existedDuringSend = existsSync(p.mediaPath);
-        return { messageIds: ["img"] };
-      }),
-    };
-
-    await dispatchBatch(summaryBatch(), {
-      account: makeAccount({ render: { enabled: true } }),
-      cfg,
-      client: makeClient(),
-      runtime: runtime as never,
-      send: send as never,
-      renderImage: (async () => new Uint8Array([1, 2, 3])) as never,
-    });
-
-    expect(existedDuringSend).toBe(true);
-    expect(existsSync(seenPath)).toBe(false);
-  });
-
-  it("falls back to text when rendering returns null", async () => {
-    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "总结内容" } });
     const send = { sendText: vi.fn(async () => ({ messageIds: [] })), sendMedia: vi.fn(async () => ({ messageIds: [] })) };
-
-    await dispatchBatch(summaryBatch(), {
-      account: makeAccount({ render: { enabled: true } }),
-      cfg,
-      client: makeClient(),
-      runtime: runtime as never,
-      send: send as never,
-      renderImage: (async () => null) as never,
-    });
-
-    expect(send.sendMedia).not.toHaveBeenCalled();
-    expect(send.sendText).toHaveBeenCalledTimes(1);
-    expect(send.sendText.mock.calls[0]![0]).toMatchObject({ text: "总结内容" });
-  });
-
-  it("falls back to text when the image send itself fails", async () => {
-    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "总结内容" } });
-    const errors: string[] = [];
-    const send = {
-      sendText: vi.fn(async () => ({ messageIds: [] })),
-      sendMedia: vi.fn(async () => {
-        throw new Error("image upload rejected");
-      }),
-    };
-
-    await dispatchBatch(summaryBatch(), {
-      account: makeAccount({ render: { enabled: true } }),
-      cfg,
-      client: makeClient(),
-      runtime: runtime as never,
-      send: send as never,
-      renderImage: (async () => new Uint8Array([1])) as never,
-      log: { error: (m) => errors.push(m) },
-    });
-
-    expect(send.sendText).toHaveBeenCalledTimes(1);
-    expect(errors.join("\n")).toContain("image upload rejected");
-  });
-
-  it("never renders a realtime reply to an image", async () => {
-    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "**普通对话回复**" } });
-    const send = { sendText: vi.fn(async () => ({ messageIds: [] })), sendMedia: vi.fn(async () => ({ messageIds: [] })) };
-    const renderImage = vi.fn(async () => new Uint8Array([1]));
-
-    await dispatchBatch(summaryBatch({ kind: "realtime", commandMessage: undefined }), {
-      account: makeAccount({ render: { enabled: true } }),
-      cfg,
-      client: makeClient(),
-      runtime: runtime as never,
-      send: send as never,
-      renderImage: renderImage as never,
-    });
-
-    expect(renderImage).not.toHaveBeenCalled();
-    expect(send.sendText).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not render when render.enabled is false", async () => {
-    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "总结内容" } });
-    const send = { sendText: vi.fn(async () => ({ messageIds: [] })), sendMedia: vi.fn(async () => ({ messageIds: [] })) };
-    const renderImage = vi.fn(async () => new Uint8Array([1]));
 
     await dispatchBatch(summaryBatch(), {
       account: makeAccount(),
@@ -644,11 +527,45 @@ describe("dispatchBatch — summary batches", () => {
       client: makeClient(),
       runtime: runtime as never,
       send: send as never,
-      renderImage: renderImage as never,
     });
 
-    expect(renderImage).not.toHaveBeenCalled();
-    expect(send.sendText).toHaveBeenCalledTimes(1);
+    const sent = (send.sendText.mock.calls[0]![0] as { text: string }).text;
+    expect(sent).toBe("【今日总结】\n\n• 周四 发版\n• 见 release.md");
+    expect(sent).not.toContain("##");
+    expect(sent).not.toContain("**");
+  });
+
+  it("leaves a realtime reply's Markdown untouched", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "**普通对话回复**" } });
+    const send = { sendText: vi.fn(async () => ({ messageIds: [] })), sendMedia: vi.fn(async () => ({ messageIds: [] })) };
+
+    await dispatchBatch(summaryBatch({ kind: "realtime", commandMessage: undefined }), {
+      account: makeAccount(),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as never,
+      send: send as never,
+    });
+
+    expect((send.sendText.mock.calls[0]![0] as { text: string }).text).toBe("**普通对话回复**");
+  });
+
+  it("sends nothing when the reply flattens to an empty string", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "```\n```" } });
+    const send = { sendText: vi.fn(async () => ({ messageIds: [] })), sendMedia: vi.fn(async () => ({ messageIds: [] })) };
+    const info: string[] = [];
+
+    await dispatchBatch(summaryBatch(), {
+      account: makeAccount(),
+      cfg,
+      client: makeClient(),
+      runtime: runtime as never,
+      send: send as never,
+      log: { info: (m) => info.push(m) },
+    });
+
+    expect(send.sendText).not.toHaveBeenCalled();
+    expect(info.join("\n")).toContain("empty after markdown flattening");
   });
 
   it("omits the quote-reply when replyToTrigger is off", async () => {
