@@ -135,6 +135,9 @@ export async function runSummaryCommand(
         text,
         replyToId: account.replyToTrigger ? msg.messageId : undefined,
         chunkLimit: account.textChunkLimit,
+        // Notices can embed upstream error strings verbatim — a stray
+        // `[CQ:at,...]` in one must stay literal, never a real ping.
+        convertAtCodes: false,
         debug: outboundDebug,
       });
     } catch (err) {

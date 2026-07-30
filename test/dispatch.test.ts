@@ -568,6 +568,69 @@ describe("dispatchBatch — digest", () => {
   });
 });
 
+// ── dispatchBatch — outbound mentions ───────────────────────────────────
+
+describe("dispatchBatch — outbound mentions", () => {
+  it("rewrites @displayName of a batch sender into a real mention code for a realtime group reply", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "@张三 收到，马上看。" } });
+    const send = makeSend();
+
+    await dispatchBatch(makeBatch(), { account: makeAccount(), cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send });
+
+    expect(send.sendText).toHaveBeenCalledTimes(1);
+    expect(send.sendText.mock.calls[0]![0]).toMatchObject({
+      text: "[CQ:at,qq=10001] 收到，马上看。",
+      convertAtCodes: true,
+    });
+  });
+
+  it("resolves @name against the reply-history buffer too", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "@李四 你之前问的好了" } });
+    const send = makeSend();
+    const batch = makeBatch({
+      history: [makeMsg({ senderId: 10002, senderName: "李四", messageId: 400 })],
+    });
+
+    await dispatchBatch(batch, { account: makeAccount(), cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send });
+
+    expect(send.sendText.mock.calls[0]![0]).toMatchObject({ text: "[CQ:at,qq=10002] 你之前问的好了" });
+  });
+
+  it("leaves @unknown-name untouched", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "@王五 在吗" } });
+    const send = makeSend();
+
+    await dispatchBatch(makeBatch(), { account: makeAccount(), cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send });
+
+    expect(send.sendText.mock.calls[0]![0]).toMatchObject({ text: "@王五 在吗" });
+  });
+
+  it("does not rewrite names in a direct chat", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "@张三 hi" } });
+    const send = makeSend();
+    const direct = makeMsg({ peerId: "private:10001", peerKind: "direct", groupId: undefined });
+    const batch = makeBatch({ peerId: "private:10001", peerKind: "direct", groupId: undefined, messages: [direct] });
+
+    await dispatchBatch(batch, { account: makeAccount(), cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send });
+
+    expect(send.sendText.mock.calls[0]![0]).toMatchObject({ text: "@张三 hi" });
+  });
+
+  it("disables at-code conversion for digest replies, so echoed transcript codes stay literal", async () => {
+    const { runtime } = createMockRuntime({ nextDeliverPayload: { text: "群里有人发了 [CQ:at,qq=10001] 这样的内容" } });
+    const send = makeSend();
+    const batch = makeBatch({ kind: "digest", trigger: undefined });
+
+    await dispatchBatch(batch, { account: makeAccount(), cfg, client: makeClient(), runtime: runtime as unknown as PluginRuntime, send });
+
+    expect(send.sendText).toHaveBeenCalledTimes(1);
+    expect(send.sendText.mock.calls[0]![0]).toMatchObject({
+      text: "群里有人发了 [CQ:at,qq=10001] 这样的内容",
+      convertAtCodes: false,
+    });
+  });
+});
+
 // ── dispatchBatch — reply-to-trigger quoting ────────────────────────────
 
 describe("dispatchBatch — reply-to-trigger quoting", () => {

@@ -47,7 +47,7 @@ it. Realtime replies are short and conversational and go out untouched.
 | `quote.ts` | Actively resolves quoted/forwarded messages via `get_msg`/`get_forward_msg`, with depth/node/char budgets. |
 | `dispatch.ts` | Turns one `AggregatedBatch` into a single agent turn via `pluginRuntime.channel.*`, then delivers the reply back to QQ. |
 | `gateway.ts` | Owns one long-lived connection per account; wires client events → triggers → aggregator → dispatch; tracks self-sent message ids. |
-| `outbound.ts` | Target parsing (`group:<id>` / `private:<id>` / bare id), text chunking, `sendText`/`sendMedia`/`reactToMessage`. |
+| `outbound.ts` | Target parsing (`group:<id>` / `private:<id>` / bare id), text chunking, outbound @-mentions (`[CQ:at,qq=N]` → real `at` segments; `rewriteNameMentions` for `@名字` tokens; `qq=all` never converts), `sendText`/`sendMedia`/`reactToMessage`. |
 | `tools.ts` | Two read-only agent tools: `snowluma_get_history`, `snowluma_get_group_members`. Parameter schemas are plain JSON Schema literals (byte-identical to typebox 1.x `Type.Object` output; `typebox` is type-only — see hard constraints). |
 | `params.ts` | Local, `openclaw`-free `readStringParam`/`readNumberParam` for `tools.ts` (keeps the entry graphs openclaw-free — see hard constraints). |
 | `sdk.ts` | Self-patching lazy loader/registry for `@snowluma/sdk`: `ensureSnowLumaSdk()` (patch dist in place, then dynamic `import`) + synchronous `getSnowLumaSdk()` for post-load paths. The ONLY place the SDK is imported with value semantics — see hard constraints. |

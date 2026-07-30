@@ -23,7 +23,12 @@ import type { SnowLumaApiClient } from "@snowluma/sdk";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import type { AggregatedBatch } from "./aggregator.js";
-import { OPENCLAW_EMPTY_INPUT_NOTICE, sendMedia as defaultSendMedia, sendText as defaultSendText } from "./outbound.js";
+import {
+  OPENCLAW_EMPTY_INPUT_NOTICE,
+  rewriteNameMentions,
+  sendMedia as defaultSendMedia,
+  sendText as defaultSendText,
+} from "./outbound.js";
 import { markdownToText } from "./markdown-text.js";
 import { formatQuoteContext, resolveQuoteContext as defaultResolveQuoteContext } from "./quote.js";
 import type { QuoteDeps } from "./quote.js";
@@ -236,6 +241,25 @@ export function buildBatchBody(
   return buildRealtimeBody(batch, account, quoteText);
 }
 
+/**
+ * Every participant a realtime group reply may @ by the tokens the agent saw in its
+ * prompt: senders of the current batch plus the reply-history buffer, keyed by both
+ * the sanitized display name (what `renderTranscriptLine`/`renderSegments` showed)
+ * and the bare id string (what the `name(id)` labels showed). Later entries win, so
+ * a duplicated display name resolves to its most recent speaker.
+ */
+function collectMentionTargets(batch: AggregatedBatch): Map<string, string | number> {
+  const targets = new Map<string, string | number>();
+  const add = (msg: NormalizedMessage) => {
+    const name = sanitizeDisplayName(msg.senderName);
+    if (name) targets.set(name, msg.senderId);
+    targets.set(String(msg.senderId), msg.senderId);
+  };
+  for (const msg of batch.history ?? []) add(msg);
+  for (const msg of batch.messages) add(msg);
+  return targets;
+}
+
 /** The last message (scanning backward) that carries a quote or a forward — realtime only. */
 function findQuoteSource(messages: NormalizedMessage[]): NormalizedMessage | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -410,9 +434,27 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
 
     const messagesConfig = runtime.channel.reply.resolveEffectiveMessagesConfig(cfg, route.agentId);
 
+    // Realtime group replies get their `@名字`/`@QQ号` tokens rewritten into real
+    // mention codes — but only for participants of this very batch (current
+    // messages + history buffer), so the agent can only ping people it was
+    // actually shown. Private chats have no one to mention; summarisation
+    // replies may quote transcript text verbatim, so they never rewrite (and
+    // never convert codes either — see `convertAtCodes` below).
+    const mentionTargets =
+      batch.kind === "realtime" && batch.peerKind === "group" ? collectMentionTargets(batch) : undefined;
+
     const sendErrorNotice = async (errorText: string) => {
       try {
-        await send.sendText({ client, to: address, text: errorText, chunkLimit: account.textChunkLimit, debug: outboundDebug });
+        // Error text embeds upstream strings verbatim — never let a stray
+        // `[CQ:at,...]` inside one become a real ping.
+        await send.sendText({
+          client,
+          to: address,
+          text: errorText,
+          chunkLimit: account.textChunkLimit,
+          convertAtCodes: false,
+          debug: outboundDebug,
+        });
       } catch (sendErr) {
         log?.error?.(`[snowluma:${account.accountId}] failed to send error notice: ${String(sendErr)}`);
       }
@@ -439,8 +481,13 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
           // A summarisation reply is long structured Markdown, and QQ renders
           // none of it — `## 今日总结` / `**周四**` would arrive with the syntax
           // showing. Flatten it to chat-readable text first. Realtime replies
-          // are short and conversational, so they go out untouched.
-          const outgoingText = isSummarisation ? markdownToText(replyText) : replyText;
+          // are short and conversational, so they go out untouched apart from
+          // mention rewriting (`@名字` → a real at, for known participants only).
+          const outgoingText = isSummarisation
+            ? markdownToText(replyText)
+            : mentionTargets
+              ? rewriteNameMentions(replyText, mentionTargets)
+              : replyText;
 
           // Checked on the FLATTENED text, before anything is sent: a model that
           // decorates its refusal (`**SKIP**`) would slip past a raw comparison
@@ -486,6 +533,9 @@ export async function dispatchBatch(batch: AggregatedBatch, deps: DispatchDeps):
               text: outgoingText,
               replyToId,
               chunkLimit: account.textChunkLimit,
+              // A digest/summary body can contain transcript text verbatim — a
+              // `[CQ:at,qq=...]` a member merely *typed* must stay literal there.
+              convertAtCodes: !isSummarisation,
               debug: outboundDebug,
             });
             runtime.channel.activity.record({

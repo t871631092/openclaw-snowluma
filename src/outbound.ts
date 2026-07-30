@@ -1,8 +1,10 @@
 /**
- * Outbound sending: target parsing, text chunking, and the SnowLuma message builders.
+ * Outbound sending: target parsing, text chunking, mention conversion, and the
+ * SnowLuma message builders.
  *
  * Everything here goes through the injected `SnowLumaApiClient` action methods and the
- * SDK's `messages` builders (`text`/`image`/`record`/`reply`) — no raw OneBot payloads.
+ * SDK's `messages` builders (`chain`/`text`/`at`/`image`/`record`/`reply`) — no raw
+ * OneBot payloads.
  */
 
 import type { SnowLumaApiClient } from "@snowluma/sdk";
@@ -139,6 +141,80 @@ export function chunkText(text: string, limit: number): string[] {
 
 const DEFAULT_CHUNK_LIMIT = 4500; // matches config.ts's default `textChunkLimit`
 
+// ── Mentions ─────────────────────────────────────────────────────────────
+
+/**
+ * An explicit outbound mention: `[CQ:at,qq=<QQ号>]` (extra params after the qq are
+ * tolerated and ignored — the group resolves the display name itself). Only numeric
+ * ids match: `qq=all` (@全体成员) is deliberately excluded, because outgoing text can
+ * quote inbound chat verbatim and a member who typed `[CQ:at,qq=all]` at the bot must
+ * not be able to turn that echo into a real mass ping. Always consumed via `matchAll`,
+ * which clones the regex, so the `g`-flag `lastIndex` never leaks between calls.
+ */
+const CQ_AT_PATTERN = /\[CQ:at,qq=(\d+)(?:,[^\]]*)?\]/g;
+
+/**
+ * `foo@qq.com` must never become a mention of a participant named "qq": an `@` glued
+ * to an email-ish local part is not a mention token. CJK before the `@` stays fine —
+ * "辛苦了@张三" is a real mention.
+ */
+const EMAIL_LOCAL_CHAR = /[A-Za-z0-9._%+-]/;
+
+/** A char that could continue a longer name — a candidate match must stop before one. */
+const WORDISH_CHAR = /[\p{L}\p{N}_]/u;
+
+/**
+ * Rewrites `@<名字>` / `@<QQ号>` tokens whose target is a *known* participant into
+ * explicit `[CQ:at,qq=N]` codes, which `sendText` then materializes as real mention
+ * segments. Purely textual and conservative:
+ *
+ * - only keys present in `targets` are touched — any other `@...` stays literal text;
+ * - the char before `@` must not be email-local (`foo@qq.com` stays), and the char
+ *   after the matched name must not be wordish (`@张三丰` never half-matches a known
+ *   `张三`, it either matches the full longer name or stays text);
+ * - longer keys win over shorter ones when several could match at one position;
+ * - an `@` inside an existing `[CQ:...]` code is never rewritten.
+ *
+ * `targets` keys must be exactly the tokens the reader of the prompt saw (sanitized
+ * display names / bare id strings); values are the QQ id to ping.
+ */
+export function rewriteNameMentions(text: string, targets: ReadonlyMap<string, string | number>): string {
+  if (!text.includes("@") || targets.size === 0) return text;
+
+  const names = [...targets.keys()].filter((name) => name.length > 0).sort((a, b) => b.length - a.length);
+  if (names.length === 0) return text;
+
+  const protectedSpans: Array<[number, number]> = [];
+  for (const match of text.matchAll(CQ_CODE_PATTERN)) {
+    const start = match.index ?? 0;
+    protectedSpans.push([start, start + match[0].length]);
+  }
+  const isProtected = (index: number): boolean =>
+    protectedSpans.some(([start, end]) => index >= start && index < end);
+  const isWordish = (ch: string | undefined): boolean => ch !== undefined && WORDISH_CHAR.test(ch);
+
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    const before = i > 0 ? text[i - 1]! : undefined;
+    if (ch !== "@" || isProtected(i) || (before !== undefined && EMAIL_LOCAL_CHAR.test(before))) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const hit = names.find((name) => text.startsWith(name, i + 1) && !isWordish(text[i + 1 + name.length]));
+    if (!hit) {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    out += `[CQ:at,qq=${targets.get(hit)!}]`;
+    i += 1 + hit.length;
+  }
+  return out;
+}
+
 /**
  * Stable phrase from OpenClaw's runtime "empty inbound" notice
  * ("I didn't receive any text in your message. Please resend or add a caption.").
@@ -206,6 +282,29 @@ async function dispatchOutgoing(
 }
 
 /**
+ * Builds the outgoing message for one chunk. Plain text stays a single `text`
+ * segment; with `convertAtCodes` on, every `[CQ:at,qq=N]` becomes a real SDK `at`
+ * segment, so QQ renders an actual mention (highlight + notification) instead of the
+ * literal code. `chunkText` already refuses to split inside a CQ code, so a code is
+ * always whole within its chunk by the time it gets here.
+ */
+function buildChunkMessage(chunk: string, replyToId: string | number | undefined, convertAtCodes: boolean) {
+  const sdk = getSnowLumaSdk();
+  let outgoing = replyToId !== undefined ? sdk.reply(replyToId) : sdk.chain();
+  let cursor = 0;
+  if (convertAtCodes) {
+    for (const match of chunk.matchAll(CQ_AT_PATTERN)) {
+      const start = match.index ?? 0;
+      if (start > cursor) outgoing = outgoing.text(chunk.slice(cursor, start));
+      outgoing = outgoing.at(Number(match[1]));
+      cursor = start + match[0].length;
+    }
+  }
+  if (cursor < chunk.length) outgoing = outgoing.text(chunk.slice(cursor));
+  return outgoing;
+}
+
+/**
  * Chunks `text` and sends each piece in order. When `replyToId` is given, only the
  * first chunk carries the `reply(...)` segment — later chunks are plain continuations
  * of the same reply, not additional quotes of the original message.
@@ -216,9 +315,15 @@ export async function sendText(params: {
   text: string;
   replyToId?: string | number;
   chunkLimit?: number;
+  /**
+   * Convert `[CQ:at,qq=<QQ号>]` codes in `text` into real mention segments.
+   * Default true. Summarisation replies pass false: their text may quote a chat
+   * transcript verbatim, and an echoed code must never ping anyone.
+   */
+  convertAtCodes?: boolean;
   debug?: OutboundDebug;
 }): Promise<{ messageIds: string[] }> {
-  const { client, to, text: body, replyToId, chunkLimit = DEFAULT_CHUNK_LIMIT, debug } = params;
+  const { client, to, text: body, replyToId, chunkLimit = DEFAULT_CHUNK_LIMIT, convertAtCodes = true, debug } = params;
   const target = parseTarget(to);
 
   // Universal chokepoint: never send OpenClaw's canned empty-inbound notice to QQ,
@@ -233,9 +338,8 @@ export async function sendText(params: {
   const messageIds: string[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
-    const { reply, text } = getSnowLumaSdk();
     const chunkReplyToId = i === 0 ? replyToId : undefined;
-    const outgoing = chunkReplyToId !== undefined ? reply(chunkReplyToId).text(chunk) : text(chunk);
+    const outgoing = buildChunkMessage(chunk, chunkReplyToId, convertAtCodes);
     emitOutboundDebug(debug, target.kind === "group" ? "sendGroupMessage" : "sendPrivateMessage", target, {
       chunk: `${i + 1}/${chunks.length}`,
       replyToId: chunkReplyToId,

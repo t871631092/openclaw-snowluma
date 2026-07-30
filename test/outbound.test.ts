@@ -3,7 +3,15 @@ import { pathToFileURL } from "node:url";
 import path from "node:path";
 import type { SnowLumaApiClient } from "@snowluma/sdk";
 
-import { chunkText, formatTarget, parseTarget, reactToMessage, sendMedia, sendText } from "../src/outbound.js";
+import {
+  chunkText,
+  formatTarget,
+  parseTarget,
+  reactToMessage,
+  rewriteNameMentions,
+  sendMedia,
+  sendText,
+} from "../src/outbound.js";
 
 // The outbound tests must never open a real socket, so the client is a hand-written
 // object recording calls rather than a real SnowLumaWebSocketClient instance.
@@ -220,6 +228,120 @@ describe("sendText", () => {
     await expect(sendText({ client, to: "bogus:1:2", text: "hi" })).rejects.toThrow();
     expect(raw.sendGroupMessage).not.toHaveBeenCalled();
     expect(raw.sendPrivateMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ── sendText — mention conversion ──────────────────────────────────────────
+
+/** Raw OneBot segments of the message a fake-client call received. */
+function segmentsOfCall(call: unknown[]): Array<{ type: string; data: Record<string, unknown> }> {
+  const message = call[1] as { toSegments?: () => Array<{ type: string; data: Record<string, unknown> }> };
+  return message.toSegments ? message.toSegments() : [];
+}
+
+describe("sendText — mention conversion", () => {
+  it("converts [CQ:at,qq=N] into a real at segment between text segments", async () => {
+    const { client, raw } = makeFakeClient();
+
+    await sendText({ client, to: "group:1", text: "请 [CQ:at,qq=10001] 看一下" });
+
+    const segments = segmentsOfCall(raw.sendGroupMessage.mock.calls[0]!);
+    expect(segments.map((s) => s.type)).toEqual(["text", "at", "text"]);
+    expect(String(segments[1]!.data.qq)).toBe("10001");
+    expect(segments[0]!.data.text).toBe("请 ");
+    expect(segments[2]!.data.text).toBe(" 看一下");
+  });
+
+  it("tolerates extra CQ params after the qq", async () => {
+    const { client, raw } = makeFakeClient();
+
+    await sendText({ client, to: "group:1", text: "[CQ:at,qq=10001,name=张三] 你好" });
+
+    const segments = segmentsOfCall(raw.sendGroupMessage.mock.calls[0]!);
+    expect(segments[0]!.type).toBe("at");
+    expect(String(segments[0]!.data.qq)).toBe("10001");
+  });
+
+  it("never converts qq=all — an echoed mass ping must stay literal text", async () => {
+    const { client, raw } = makeFakeClient();
+
+    await sendText({ client, to: "group:1", text: "[CQ:at,qq=all] 大家好" });
+
+    const segments = segmentsOfCall(raw.sendGroupMessage.mock.calls[0]!);
+    expect(segments.every((s) => s.type === "text")).toBe(true);
+    expect(segments[0]!.data.text).toContain("[CQ:at,qq=all]");
+  });
+
+  it("leaves the code literal when convertAtCodes is false", async () => {
+    const { client, raw } = makeFakeClient();
+
+    await sendText({ client, to: "group:1", text: "[CQ:at,qq=10001] hi", convertAtCodes: false });
+
+    const segments = segmentsOfCall(raw.sendGroupMessage.mock.calls[0]!);
+    expect(segments.every((s) => s.type === "text")).toBe(true);
+    expect(segments[0]!.data.text).toBe("[CQ:at,qq=10001] hi");
+  });
+
+  it("keeps the reply segment first and the at segment after it on a quoted reply", async () => {
+    const { client, raw } = makeFakeClient();
+
+    await sendText({ client, to: "group:1", text: "[CQ:at,qq=10001] 收到", replyToId: "555" });
+
+    const segments = segmentsOfCall(raw.sendGroupMessage.mock.calls[0]!);
+    expect(segments.map((s) => s.type)).toEqual(["reply", "at", "text"]);
+  });
+});
+
+// ── rewriteNameMentions ────────────────────────────────────────────────────
+
+describe("rewriteNameMentions", () => {
+  const targets = new Map<string, string | number>([
+    ["张三", 10001],
+    ["10001", 10001],
+    ["张三丰", 10002],
+  ]);
+
+  it("rewrites a known display name into an at code", () => {
+    expect(rewriteNameMentions("@张三 你好", targets)).toBe("[CQ:at,qq=10001] 你好");
+  });
+
+  it("rewrites a bare id token", () => {
+    expect(rewriteNameMentions("@10001 在吗", targets)).toBe("[CQ:at,qq=10001] 在吗");
+  });
+
+  it("prefers the longest matching name", () => {
+    expect(rewriteNameMentions("@张三丰 好", targets)).toBe("[CQ:at,qq=10002] 好");
+  });
+
+  it("does not half-match a shorter name when the token continues with a wordish char", () => {
+    const onlyShort = new Map<string, string | number>([["张三", 10001]]);
+    expect(rewriteNameMentions("@张三丰 好", onlyShort)).toBe("@张三丰 好");
+  });
+
+  it("leaves unknown names untouched", () => {
+    expect(rewriteNameMentions("@李四 你好", targets)).toBe("@李四 你好");
+  });
+
+  it("allows CJK right before the @ but not an email-ish local part", () => {
+    expect(rewriteNameMentions("辛苦了@张三 谢谢", targets)).toBe("辛苦了[CQ:at,qq=10001] 谢谢");
+    const emailish = new Map<string, string | number>([["qq", 123]]);
+    expect(rewriteNameMentions("发到 foo@qq.com", emailish)).toBe("发到 foo@qq.com");
+  });
+
+  it("accepts punctuation or end-of-string after the name", () => {
+    expect(rewriteNameMentions("@张三：好", targets)).toBe("[CQ:at,qq=10001]：好");
+    expect(rewriteNameMentions("收到@张三", targets)).toBe("收到[CQ:at,qq=10001]");
+  });
+
+  it("never rewrites an @ inside an existing CQ code", () => {
+    expect(rewriteNameMentions("[CQ:image,file=a@张三.png] 看图", targets)).toBe(
+      "[CQ:image,file=a@张三.png] 看图",
+    );
+  });
+
+  it("returns the input unchanged for an empty map or @-free text", () => {
+    expect(rewriteNameMentions("@张三 你好", new Map())).toBe("@张三 你好");
+    expect(rewriteNameMentions("没有提及", targets)).toBe("没有提及");
   });
 });
 
